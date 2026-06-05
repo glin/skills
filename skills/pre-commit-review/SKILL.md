@@ -1,7 +1,7 @@
 ---
 name: pre-commit-review
 description: "Review code changes before committing using subagent(s). Use when: pre-commit review, review my changes, code review before commit, review agent changes, multi-model review. Saves context tokens by running reviews in isolated subagents."
-argument-hint: "[models...] e.g. 'opus sonnet' or blank for current model + sonnet"
+argument-hint: "[models...] e.g. 'opus sonnet' or blank for a single pass with the current model"
 ---
 
 # Pre-Commit Code Review
@@ -34,7 +34,7 @@ The user may specify models in the argument. Parse the argument to identify requ
 
 | Shorthand | Model name |
 |-----------|------------|
-| (none/blank) | current session model + Sonnet 4.6 in parallel |
+| (none/blank) | single pass with current session model |
 | `opus` | Claude Opus 4.6 |
 | `sonnet` | Claude Sonnet 4.6 |
 | `gpt` | GPT-5.5 |
@@ -50,7 +50,7 @@ The user may specify models in the argument. Parse the argument to identify requ
 
 If multiple models are specified (e.g., `/pre-commit-review opus sonnet`), run one subagent per model **in parallel**.
 
-If no models are specified, default to current session model + Sonnet 4.6 in parallel. For the current session model, omit the `model` parameter. A subagent is always used because the purpose is to isolate the review from the main session to save context tokens.
+If no models are specified, default to a **single pass with the current session model** (omit the `model` parameter). With the file-by-file prompt below, a single reviewer catches the same findings a second parallel model would, so multiple models add cost and latency without adding catches. Multi-model (`opus sonnet`, `all`, etc.) remains available as an explicit opt-in for when you specifically want cross-checking. A subagent is always used because the purpose is to isolate the review from the main session to save context tokens.
 
 ### 3. Launch Review Subagent(s)
 
@@ -95,6 +95,10 @@ Skip criteria that are irrelevant to the file types being reviewed.
 
 Get the full diff for these files yourself using git. Read the changed files in full to understand surrounding context. Use workspace search tools to check for dead code, duplication, and verify constants. Only read files within the workspace.
 
+**Work file-by-file.** Do not review the whole changeset in one pass. Walk the changed files one at a time, apply the full criteria list above to each file's diff, and record that file's findings before moving to the next. On a large or busy diff, a single holistic pass spends its attention on the loud findings (concrete bugs) and silently drops the quiet ones (a missing test, a convention violation); per-file passes keep each file's coverage intact.
+
+**Then do a coverage sweep.** After the per-file pass, re-scan the changed files once more, looking only for the findings most easily lost next to concrete bugs: a new handler/endpoint/converter with no test, dialect- or convention-specific issues, and missing changelog/docs. This is a coverage check, not a licence to invent issues. Do not raise test-gaps on trivial helpers.
+
 Only flag issues introduced by the changes. Before reporting any finding, verify the problematic code appears in the `git diff` output (added or modified lines). If code was not changed in this diff, it is out of scope - even if you discover a real bug while reading surrounding context. Pre-existing issues in unchanged code may be mentioned as INFO at most, clearly labeled "[pre-existing]", but never WARNING or CRITICAL.
 
 Do not flag untracked files unless they appear in the staged changes. Do not assume which files the user intends to commit.
@@ -103,12 +107,16 @@ Plan files and design docs (e.g. `.prompt.md`, `.md` files in prompts or docs di
 
 **Do not report successful validation as findings.** Findings are for problems. If you verified something and it was correct, that is not a finding.
 
+**Validate before reporting.** Once you have drafted your findings, re-read the exact lines each one cites and check reachability (is the code path actually reachable, are there guards that already handle it). Drop any finding you cannot substantiate against the cited lines. Only then write the review.
+
 ## Output Format
 
 Return a review with:
 - A summary with overall risk level (low/medium/high)
-- Findings with file locations, severity (CRITICAL/WARNING/INFO), and suggested fixes
+- Findings with file locations, severity (CRITICAL/WARNING/INFO), confidence (high/medium/low), and suggested fixes
 - A verdict: APPROVE, REQUEST_CHANGES, or COMMENT
+
+Severity and confidence are separate axes: severity is the impact if the finding is real; confidence is how sure you are that it is real. A high-impact guess is still a guess. **Do not use hedge words ("possibly", "might", "appears to") on a high-confidence finding** - if you are hedging, it is not high confidence, so label it medium or low.
 
 If there are no issues, say so clearly. Do not fabricate issues.
 ```
