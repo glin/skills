@@ -30,12 +30,12 @@ Determine the list of changed files to review.
 
 The user may specify models in the argument. Parse the argument to identify requested models:
 
-<!-- LAST REVIEWED: 2026-05. Bump model versions here quarterly; keep in sync with `consult/SKILL.md`. -->
+<!-- LAST REVIEWED: 2026-06. Bump model versions quarterly; `consult/SKILL.md` is the source of truth for this table, keep them identical. -->
 
 | Shorthand | Model name |
 |-----------|------------|
 | (none/blank) | single pass with current session model |
-| `opus` | Claude Opus 4.6 |
+| `opus` | Claude Opus 4.8 |
 | `sonnet` | Claude Sonnet 4.6 |
 | `gpt` | GPT-5.5 |
 | `codex` | GPT-5.3 Codex |
@@ -44,13 +44,13 @@ The user may specify models in the argument. Parse the argument to identify requ
 | `all` | opus + sonnet + gpt + gemini in parallel |
 
 **Model parameter format varies by environment.** Check what `runSubagent` expects:
-- If the tool docs specify a format like `"Name (Vendor)"`, append the vendor (e.g., `Claude Opus 4.6 (copilot)`).
-- If the tool accepts plain model names or IDs, use the model name directly (e.g., `claude-opus-4-0-20250514`).
+- If the tool docs specify a format like `"Name (Vendor)"`, append the vendor (e.g., `Claude Opus 4.8 (copilot)`).
+- If the tool accepts plain model names or IDs, use the model name directly (e.g., `claude-opus-4-8`).
 - When in doubt, check the `runSubagent` tool's `model` parameter description for the expected format.
 
 If multiple models are specified (e.g., `/pre-commit-review opus sonnet`), run one subagent per model **in parallel**.
 
-If no models are specified, default to a **single pass with the current session model** (omit the `model` parameter). With the file-by-file prompt below, a single reviewer catches the same findings a second parallel model would, so multiple models add cost and latency without adding catches. Multi-model (`opus sonnet`, `all`, etc.) remains available as an explicit opt-in for when you specifically want cross-checking. A subagent is always used because the purpose is to isolate the review from the main session to save context tokens.
+If no models are specified, default to a **single pass with the current session model** (omit the `model` parameter). With the file-by-file prompt below, a second *Claude* model rarely catches anything the first one missed, so a same-vendor parallel run mostly adds cost and latency. Reach for multi-model (`opus sonnet`, `all`, etc.) when you want a genuinely different *vendor's* perspective (GPT, Gemini), not just a second Claude. A subagent is always used because the purpose is to isolate the review from the main session to save context tokens.
 
 ### 3. Launch Review Subagent(s)
 
@@ -117,6 +117,8 @@ Return a review with:
 - A verdict: APPROVE, REQUEST_CHANGES, or COMMENT
 
 Severity and confidence are separate axes: severity is the impact if the finding is real; confidence is how sure you are that it is real. A high-impact guess is still a guess. **Do not use hedge words ("possibly", "might", "appears to") on a high-confidence finding** - if you are hedging, it is not high confidence, so label it medium or low.
+
+**Report low-confidence findings too, clearly labeled; do not silently drop them.** This is an interactive review where the user decides what matters, so a labeled "maybe" is more useful than a hidden one. (Filtering low-confidence findings makes sense when posting unattended to a PR, but not here.)
 
 If there are no issues, say so clearly. Do not fabricate issues.
 ```

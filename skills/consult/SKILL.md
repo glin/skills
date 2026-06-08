@@ -38,12 +38,12 @@ For non-trivial consults, specifically confirm with the user: (a) the candidate 
 
 The user may specify models in the argument. Parse the argument to identify requested models:
 
-<!-- LAST REVIEWED: 2026-05. Bump model versions here quarterly; this table is the source of truth for the `consult` and `pre-commit-review` skills. -->
+<!-- LAST REVIEWED: 2026-06. Bump model versions here quarterly; this table is the source of truth for the `consult` and `pre-commit-review` skills. -->
 
 | Shorthand | Model name |
 |-----------|------------|
 | (none/blank) | current session model + Sonnet 4.6 in parallel |
-| `opus` | Claude Opus 4.6 |
+| `opus` | Claude Opus 4.8 |
 | `sonnet` | Claude Sonnet 4.6 |
 | `gpt` | GPT-5.5 |
 | `codex` | GPT-5.3 Codex |
@@ -52,7 +52,7 @@ The user may specify models in the argument. Parse the argument to identify requ
 | `all` | opus + sonnet + gpt + gemini in parallel |
 
 **Model parameter format varies by environment.** Check what `runSubagent` expects:
-- If the tool docs specify a format like `"Name (Vendor)"`, append the vendor (e.g., `Claude Opus 4.6 (copilot)`).
+- If the tool docs specify a format like `"Name (Vendor)"`, append the vendor (e.g., `Claude Opus 4.8 (copilot)`).
 - If the tool accepts plain model names or IDs, use the model name directly.
 - When in doubt, check the `runSubagent` tool's `model` parameter description for the expected format.
 
