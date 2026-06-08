@@ -1,7 +1,7 @@
 ---
 name: pre-commit-review
 description: "Review code changes before committing using subagent(s). Use when: pre-commit review, review my changes, code review before commit, review agent changes, multi-model review. Saves context tokens by running reviews in isolated subagents."
-argument-hint: "[models...] e.g. 'opus sonnet' or blank for a single pass with the current model"
+argument-hint: "[models...] e.g. 'opus sonnet', or blank for the current model + Sonnet 4.6 in parallel"
 ---
 
 # Pre-Commit Code Review
@@ -34,7 +34,7 @@ The user may specify models in the argument. Parse the argument to identify requ
 
 | Shorthand | Model name |
 |-----------|------------|
-| (none/blank) | single pass with current session model |
+| (none/blank) | current session model + Sonnet 4.6 in parallel |
 | `opus` | Claude Opus 4.8 |
 | `sonnet` | Claude Sonnet 4.6 |
 | `gpt` | GPT-5.5 |
@@ -50,7 +50,7 @@ The user may specify models in the argument. Parse the argument to identify requ
 
 If multiple models are specified (e.g., `/pre-commit-review opus sonnet`), run one subagent per model **in parallel**.
 
-If no models are specified, default to a **single pass with the current session model** (omit the `model` parameter). With the file-by-file prompt below, a second *Claude* model rarely catches anything the first one missed, so a same-vendor parallel run mostly adds cost and latency. Reach for multi-model (`opus sonnet`, `all`, etc.) when you want a genuinely different *vendor's* perspective (GPT, Gemini), not just a second Claude. A subagent is always used because the purpose is to isolate the review from the main session to save context tokens.
+If no models are specified, default to **the current session model + Sonnet 4.6 in parallel**. On a nontrivial diff the two Claude models reliably catch *different* real issues, so a single pass drops findings; neither model is a superset of the other. Sonnet does over-report, so adjudicate the merged list rather than trusting volume. For a small or trivial change, pass one model (e.g. `/pre-commit-review opus`) to skip the second pass. A subagent is always used to isolate the review from the main session and save context tokens.
 
 ### 3. Launch Review Subagent(s)
 
