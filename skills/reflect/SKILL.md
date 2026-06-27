@@ -24,7 +24,7 @@ Review the conversation history for:
 - **Gotchas and pitfalls** - things that broke unexpectedly or required non-obvious fixes
 - **Cross-file coupling discovered** - non-obvious dependencies between files or components (e.g., a config value that must stay in sync with a constant, a function whose callers aren't discoverable by grep)
 
-When citing a learning, quote the exact text or command that surfaced it. Vague "we learned X" notes age badly; concrete ones don't.
+When citing a learning, name the concrete trigger (`file:line`, command, or error) in one clause, not a retelling. Vague "we learned X" notes age badly; concrete ones don't.
 
 ### 2. Identify Target Files
 
@@ -44,7 +44,7 @@ For each learning, suggest a concrete edit to the appropriate file. Present as a
 
 Suggestions can target doc files or inline code comments. For inline comments, show the file path + line and the proposed comment text.
 
-Keep suggestions concise. Match the style and tone of the existing file. Do not suggest adding things that are already documented.
+**Write each addition at its final length, not a first draft to trim later.** Default to 1-2 sentences matching the file's terseness; state the rule and its fix, cut narrative and multi-example evidence to one clause, and never restate what the file already has (link to the existing section instead).
 
 ### 4. Apply on Approval
 
