@@ -17,6 +17,16 @@ Produce a pull request title and body that matches the repository's conventions.
 
 Read-only commands are fine: `git diff`, `git log`, `gh pr view`, `gh pr list`, `gh repo view`.
 
+## Voice
+
+Distilled from how the user rewrites AI-drafted PR bodies:
+
+- Open with a short casual first-person lede ("Just putting this up because...", "Follow-ups from #X") and cross-links to related PRs, issues, or incidents ("Supersedes #X because...").
+- Drop sections that would be empty or `N/A` on lightweight PRs; keep the testing scaffolding on substantive ones.
+- Testing sections state only what was actually run and observed. Never present simulated or hypothetical runs as results.
+- Cut rationale essays and bold feature-breakdown walls; keep repro steps, file:line references, and real links. Fluff dies, substance stays.
+- Apply the `rewrite` skill's Tier 1 banned vocabulary.
+
 ## When to Use
 
 - User asks to "draft a PR description", "write the PR body", "prep a PR description", etc.
@@ -54,7 +64,7 @@ Check, in parallel where possible:
 
 ### 4. Draft the Body
 
-- If a PR template exists, fill it out section by section. Keep placeholder headings even if a section is short; mark genuinely empty sections as `N/A`.
+- If a PR template exists, fill it out section by section. Keep a heading even if its content is short; per the Voice rules, drop sections that would be empty or `N/A` on lightweight PRs.
 - If no template, use a minimal structure:
   - **Summary**: 1 to 3 sentences on what changed and why.
   - **Changes**: bulleted list grouped by area or file when useful.

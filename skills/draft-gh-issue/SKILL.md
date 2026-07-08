@@ -22,6 +22,12 @@ Formatting invariants (these are the whole point of this skill; get them right e
 - **Cross-repo references need a resolvable form.** A bare `#123` only links within the repo the issue lives in. When you reference an issue/PR in a *different* repo (common: the issue is filed in repo A about work in repo B), write `owner/repo#123` or a full `https://github.com/owner/repo/(issues|pull)/123` URL. Verify the number and type (issue vs pull) before linking.
 - **Concise, humane prose.** Apply the `deslop` skill's prevention rules and prose tell-list (no "simply/robust/seamless/leverage/comprehensive", no bold-lead-in bullet walls where prose belongs, no "## Overview" boilerplate). Say the thing plainly. Cut qualifier soup.
 
+Voice (distilled from how the user rewrites AI-drafted issues):
+- Open with a short first-person lede giving context ("Found while working on...") and honest status ("haven't finished the fix, still thinking about what to do").
+- Problem-focused: no proposed-fix or solution section unless the user asks for one. Keep root-cause file:line references.
+- Suggest a screenshot when the problem is visible in a UI. An @-mention delegating confirmation to a colleague is welcome.
+- Apply the `rewrite` skill's Tier 1 banned vocabulary.
+
 ## Procedure
 
 ### 1. Gather context
