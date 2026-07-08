@@ -27,6 +27,8 @@ LLM-assisted work leaves recognizable markers. They are noise to every human rea
 3. Rewrite, do not just delete: a slop comment often marks a real constraint; keep the constraint, drop the story. If deleting would lose real history, move it to the repo's dev log or decision doc, and leave no link behind in the code.
 4. Report the sweep as a table: file, before-gist, action taken.
 
+Related: the `rewrite` skill transforms prose for a human to read or post (re-explaining word soup, rewriting drafts); deslop removes and prevents the markers in the artifacts themselves.
+
 ## Prevention (standing behavior)
 
 Before writing any comment or doc line, ask: would this sentence make sense to a maintainer in two years who never saw this session? If it references the session (a review, a date, a fix event, a verification step), rewrite it as the timeless contract or leave it out.
