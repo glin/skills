@@ -62,6 +62,7 @@ Check, in parallel where possible:
 - Match the tone and length of recent merged PRs.
 - Reference issues only if found in commit messages or branch name (e.g., `Closes #123`). Do not invent issue numbers.
 - Do not include secrets, tokens, file contents from `.env`, or large diffs.
+- Do NOT hard-wrap prose. Write each paragraph and bullet as a single line and let it soft-wrap; GitHub renders manual line breaks literally, so hard-wrapping produces ragged text. Only break lines where markdown requires it (list items, table rows, fenced/indented code blocks).
 
 ### 5. Update Mode (if requested)
 
