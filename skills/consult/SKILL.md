@@ -38,13 +38,14 @@ For non-trivial consults, specifically confirm with the user: (a) the candidate 
 
 The user may specify models in the argument. Parse the argument to identify requested models:
 
-<!-- LAST REVIEWED: 2026-06. Bump model versions here quarterly; this table is the source of truth for the `consult` and `pre-commit-review` skills. -->
+<!-- LAST REVIEWED: 2026-07. Bump model versions here quarterly; this table is the source of truth for the `consult` and `pre-commit-review` skills. -->
 
 | Shorthand | Model name |
 |-----------|------------|
-| (none/blank) | current session model + Sonnet 4.6 in parallel |
+| (none/blank) | Claude Opus 4.8 + Claude Sonnet 5 in parallel |
 | `opus` | Claude Opus 4.8 |
-| `sonnet` | Claude Sonnet 4.6 |
+| `sonnet` | Claude Sonnet 5 |
+| `fable` | Claude Fable 5 |
 | `gpt` | GPT-5.5 |
 | `codex` | GPT-5.3 Codex |
 | `gemini` | Gemini 3.1 Pro |
@@ -58,7 +59,7 @@ The user may specify models in the argument. Parse the argument to identify requ
 
 If multiple models are specified, run one subagent per model **in parallel** in a single tool-call block.
 
-If no models are specified, default to current session model + Sonnet 4.6 in parallel. For the current session model, omit the `model` parameter.
+If no models are specified, default to Claude Opus 4.8 + Claude Sonnet 5 in parallel. If the current session model is one of these, omit the `model` parameter for it.
 
 ### 3. Construct the Consult Prompt
 
