@@ -1,7 +1,7 @@
 ---
 name: pre-commit-review
 description: "Review code changes before committing using subagent(s). Use when: pre-commit review, review my changes, code review before commit, review agent changes, multi-model review. Saves context tokens by running reviews in isolated subagents."
-argument-hint: "[models...] e.g. 'opus sonnet', or blank for the current model + Sonnet 4.6 in parallel"
+argument-hint: "[models...] e.g. 'opus sonnet', or blank for Opus 4.8 + Sonnet 5 in parallel"
 ---
 
 # Pre-Commit Code Review
@@ -30,13 +30,14 @@ Determine the list of changed files to review.
 
 The user may specify models in the argument. Parse the argument to identify requested models:
 
-<!-- LAST REVIEWED: 2026-06. Bump model versions quarterly; `consult/SKILL.md` is the source of truth for this table, keep them identical. -->
+<!-- LAST REVIEWED: 2026-07. Bump model versions quarterly; `consult/SKILL.md` is the source of truth for this table, keep them identical. -->
 
 | Shorthand | Model name |
 |-----------|------------|
-| (none/blank) | current session model + Sonnet 4.6 in parallel |
+| (none/blank) | Claude Opus 4.8 + Claude Sonnet 5 in parallel |
 | `opus` | Claude Opus 4.8 |
-| `sonnet` | Claude Sonnet 4.6 |
+| `sonnet` | Claude Sonnet 5 |
+| `fable` | Claude Fable 5 |
 | `gpt` | GPT-5.5 |
 | `codex` | GPT-5.3 Codex |
 | `gemini` | Gemini 3.1 Pro |
@@ -50,7 +51,7 @@ The user may specify models in the argument. Parse the argument to identify requ
 
 If multiple models are specified (e.g., `/pre-commit-review opus sonnet`), run one subagent per model **in parallel**.
 
-If no models are specified, default to **the current session model + Sonnet 4.6 in parallel**. On a nontrivial diff the two Claude models reliably catch *different* real issues, so a single pass drops findings; neither model is a superset of the other. Sonnet does over-report, so adjudicate the merged list rather than trusting volume. For a small or trivial change, pass one model (e.g. `/pre-commit-review opus`) to skip the second pass. A subagent is always used to isolate the review from the main session and save context tokens.
+If no models are specified, default to **Claude Opus 4.8 + Claude Sonnet 5 in parallel**; if the current session model is one of these, omit the `model` parameter for it. On a nontrivial diff the two Claude models reliably catch *different* real issues, so a single pass drops findings; neither model is a superset of the other. Sonnet does over-report, so adjudicate the merged list rather than trusting volume. For a small or trivial change, pass one model (e.g. `/pre-commit-review opus`) to skip the second pass. A subagent is always used to isolate the review from the main session and save context tokens.
 
 ### 3. Launch Review Subagent(s)
 
