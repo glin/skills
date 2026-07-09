@@ -52,11 +52,8 @@ A technical term that must stay gets a plain-words definition in place, once.
 - Proper markdown. Short sentences, one idea each.
 - No bold-lead-in bullet walls where prose belongs, no emoji headers, no emdashes.
 - No hard-wrapped prose: one physical line per paragraph in anything destined for GitHub or Slack.
+- Code comments and docs: lead with the decision, then split distinct ideas into short paragraphs with a blank comment line between them. Concise means fewer wasted words, not fewest lines; don't pack a multi-idea explanation into one dense block.
 
 ## Self-audit before returning
 
 Re-scan the output for: any Tier 1 word, any sentence that needs a second read, any fact added or lost relative to the source. Fix, then return.
-
-## Relationship to deslop
-
-`deslop` removes and prevents LLM markers in artifacts (code comments, READMEs, docs). `rewrite` transforms prose so a human can read it or post it. Sweep with deslop; translate with rewrite.
