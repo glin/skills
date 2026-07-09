@@ -88,7 +88,7 @@ Evaluate the changes for:
 5. **AI Code Smells**: dead code, hallucinated constants, zero-value leaks, fields mapped by name similarity instead of semantics, training-data artifacts (wrong copyright years, URLs from other projects).
 6. **Commit Alignment**: do the changes match the stated intent? Flag code that looks leftover from a different approach.
 7. **Test Coverage**: behavioral changes should have tests. Flag untested logic paths.
-8. **Duplication**: check whether existing code already does this. Cross-component changes should share a single source of truth (constant, type, helper) or at least a code comment linking the call sites.
+8. **Duplication & divergent sources of truth**: check whether existing code already does this. Cross-component changes should share a single source of truth (constant, type, helper) or at least a code comment linking the call sites. For any field, serialized format, checksum, or constant the diff reads or writes, grep the repo for its OTHER readers and writers; if another site derives the "same" value from a different source, flag the divergence even though that site isn't in the diff.
 
 Skip criteria that are irrelevant to the file types being reviewed.
 
@@ -99,6 +99,8 @@ Get the full diff for these files yourself using git. Read the changed files in 
 **Work file-by-file.** Do not review the whole changeset in one pass. Walk the changed files one at a time, apply the full criteria list above to each file's diff, and record that file's findings before moving to the next. On a large or busy diff, a single holistic pass spends its attention on the loud findings (concrete bugs) and silently drops the quiet ones (a missing test, a convention violation); per-file passes keep each file's coverage intact.
 
 **Then do a coverage sweep.** After the per-file pass, re-scan the changed files once more, looking only for the findings most easily lost next to concrete bugs: a new handler/endpoint/converter with no test, dialect- or convention-specific issues, and missing changelog/docs. This is a coverage check, not a licence to invent issues. Do not raise test-gaps on trivial helpers.
+
+Also run a bounded beyond-diff sweep: for each shared symbol (field, serialized format, checksum, constant) the diff reads or writes, grep its other writers and readers and confirm they agree on source and shape. This is scoped to the symbols the diff touches, not a whole-repo review, so it stays cheap. It is what catches divergent-source-of-truth drift, where the conflicting code is a file the diff never opened.
 
 Only flag issues introduced by the changes. Before reporting any finding, verify the problematic code appears in the `git diff` output (added or modified lines). If code was not changed in this diff, it is out of scope - even if you discover a real bug while reading surrounding context. Pre-existing issues in unchanged code may be mentioned as INFO at most, clearly labeled "[pre-existing]", but never WARNING or CRITICAL.
 
