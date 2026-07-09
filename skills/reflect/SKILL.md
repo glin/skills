@@ -44,7 +44,7 @@ For each learning, suggest a concrete edit to the appropriate file. Present as a
 
 Suggestions can target doc files or inline code comments. For inline comments, show the file path + line and the proposed comment text.
 
-**Write each addition at its final length, not a first draft to trim later.** Default to 1-2 sentences matching the file's terseness; state the rule and its fix, cut narrative and multi-example evidence to one clause, and never restate what the file already has (link to the existing section instead).
+**Write each addition at its final length, not a first draft to trim later.** Default to 1-2 sentences matching the file's terseness; state the rule and its fix, cut narrative and multi-example evidence to one clause, and never restate what the file already has (link to the existing section instead). When an example is unavoidable, use one and phrase it as the general class, not the specific incident that prompted the edit; the incident belongs in a test, fixture, or linked issue, not permanent prose.
 
 ### 4. Apply on Approval
 
