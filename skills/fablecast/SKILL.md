@@ -55,7 +55,10 @@ Put what you learn in writing. It becomes the executors' context.
 ### 3. Decompose
 Split into executor-sized units. Prefer clean file boundaries so units run in
 parallel without conflict; use an ordered pipeline when one unit depends on
-another. Name exactly what each unit may touch.
+another. Name exactly what each unit may touch. For a large fan-out, pass the
+written spec through a fresh-context critic before delegating: a conflicting or
+wrong instruction here multiplies across every executor, and it is far cheaper to
+catch in the spec than in N parallel diffs.
 
 ### 4. Delegate
 Spawn one executor per unit at a tier matched to the unit (see the Executor role
@@ -72,7 +75,12 @@ In Claude Code, spawn executors with the Agent tool and set `model` to the tier
 the unit needs: a cheaper tier (`model: sonnet` / `model: haiku`) when the spec
 fully determines the work, or the top tier (`model: opus`) when the unit stays
 hard even fully specified. The role split, not the price tag, is what makes this
-work. Keep parallel units on non-overlapping files. For a scripted, repeatable
+work. Keep parallel units on non-overlapping files, and forbid any repo-global
+command that mutates shared state (`git stash`/`reset`/`checkout`/`clean`, or a
+formatter or build that rewrites shared files or caches): non-overlapping edits
+still collide through a shared git index or build cache, so a sibling's `stash`
+or `reset` can silently wipe another unit's work. A unit that must build or run
+repo-wide tooling gets its own worktree. For a scripted, repeatable
 fan-out over a known work-list, reach for the Workflow tool instead; use this
 skill for model-driven planning.
 
