@@ -84,6 +84,11 @@ repo-wide tooling gets its own worktree. For a scripted, repeatable
 fan-out over a known work-list, reach for the Workflow tool instead; use this
 skill for model-driven planning.
 
+An executor may commit only when it runs alone: splitting one file's mixed
+changes into separate commits needs the index, so it cannot run beside a
+sibling. Give it the exact `@@` hunk headers per commit and forbid repair or
+fallback commands, on any hunk mismatch it stops and reports.
+
 ### 5. Re-verify (orchestrator)
 Do not trust an executor's "done." Re-run the verification yourself, compare to
 the baseline, and read the actual artifact. Only then integrate. If a unit
