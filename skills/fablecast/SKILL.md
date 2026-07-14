@@ -1,6 +1,6 @@
 ---
 name: fablecast
-description: Orchestrate a non-trivial task. An expensive orchestrator discovers and specs, executor subagents implement in parallel at a tier matched to each unit, and every result is re-verified before it lands. Portable to any repo. Invoke when a task is big enough to split and worth delegating.
+description: Orchestrate a non-trivial task. An expensive orchestrator discovers and specs, executor subagents implement in parallel at a tier matched to each unit, and every result is re-verified before it lands. Portable to any repo. Invoke when a task is big enough to split and worth delegating. For a written plan whose phases span multiple sessions, use phased-plan, which invokes this skill inside its delegating phases.
 ---
 
 # FableCast
@@ -71,11 +71,19 @@ above). Every executor prompt carries five things:
 4. The exact verification command and the result required to pass.
 5. A request for an honest report, including any deviations.
 
-In Claude Code, spawn executors with the Agent tool and set `model` to the tier
-the unit needs: a cheaper tier (`model: sonnet` / `model: haiku`) when the spec
-fully determines the work, or the top tier (`model: opus`) when the unit stays
-hard even fully specified. The role split, not the price tag, is what makes this
-work. Keep parallel units on non-overlapping files, and forbid any repo-global
+In Claude Code, spawn executors with the Agent tool and set `model` on EVERY
+spawn. A subagent with no `model` inherits the parent's, so a top-tier session
+that fans out search or scouting agents without setting it is paying top-tier
+rates to grep. Match the tier to the unit:
+
+- Read-only search, file location, convention sweeps: the cheapest tier
+  (`model: haiku`). This is the default for exploration, never the parent's tier.
+- Implementation the spec fully determines: the middle tier (`model: sonnet`).
+- Units that stay hard even when fully specified: the top tier (`model: opus`).
+
+Discovery and verification are the two things never pushed downward; they are why
+the orchestrator is expensive. The role split, not the price tag, is what makes
+this work. Keep parallel units on non-overlapping files, and forbid any repo-global
 command that mutates shared state (`git stash`/`reset`/`checkout`/`clean`, or a
 formatter or build that rewrites shared files or caches): non-overlapping edits
 still collide through a shared git index or build cache, so a sibling's `stash`
