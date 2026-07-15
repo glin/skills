@@ -48,6 +48,8 @@ Suggestions can target doc files or inline code comments. For inline comments, s
 
 **Write each addition at its final length, not a first draft to trim later.** Default to 1-2 sentences matching the file's terseness; state the rule and its fix, cut narrative and multi-example evidence to one clause, and never restate what the file already has (link to the existing section instead). When an example is unavoidable, use one and phrase it as the general class, not the specific incident that prompted the edit; the incident belongs in a test, fixture, or linked issue, not permanent prose.
 
+**Timeless, not a diary.** Write the rule, never its history: no dates, no session or commit provenance, no "we found that" or "previously". Git blame carries provenance, and measurements only earn their place when the number IS the rule (a threshold, a limit); otherwise they are context the next reader has to skip. A learning that reads as news is bloat within a month.
+
 ### 4. Apply on Approval
 
 Wait for the user to approve specific suggestions or all of them. Apply only what they approve.
