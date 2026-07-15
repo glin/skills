@@ -45,7 +45,7 @@ Tier 1, always replace: leverage, utilize, robust, comprehensive, seamless, delv
 
 Tier 2, rewrite when two or more pile up in one paragraph: ecosystem, surface (as a verb), orchestrate, perturb, asymmetric, blast radius, nontrivial.
 
-A technical term that must stay gets a plain-words definition in place, once.
+A technical term or abbreviation that must stay gets a plain-words definition in place, once. Never leave a coined shorthand or initialism the reader can't look up.
 
 ## Formatting
 
@@ -56,4 +56,4 @@ A technical term that must stay gets a plain-words definition in place, once.
 
 ## Self-audit before returning
 
-Re-scan the output for: any Tier 1 word, any sentence that needs a second read, any fact added or lost relative to the source. Fix, then return.
+Re-scan the output for: any Tier 1 word, any undefined abbreviation or coined shorthand, any sentence that needs a second read, any fact added or lost relative to the source. Fix, then return.
