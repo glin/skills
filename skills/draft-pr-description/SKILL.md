@@ -60,6 +60,7 @@ Check, in parallel where possible:
 ### 3. Draft the Title
 
 - Imperative mood, present tense, no trailing period.
+- Wrap code identifiers, paths, and endpoints in backticks (e.g. `IsPublicP3M`, `/config`); GitHub renders them as inline code.
 - Apply the detected style (Conventional Commits prefix, gitmoji, ticket prefix) only if the repo uses it.
 - Derive from the diff's primary intent. Fall back to the latest commit subject if the diff is small and the subject is already good. Branch names are a last resort.
 
@@ -87,6 +88,7 @@ If the user asked to update or revise an existing PR:
    ```
    gh pr edit <N> --title "..." --body-file -
    ```
+   If the title contains backticks, single-quote the `--title` value (there is no `--title-file`), else the shell strips or executes them.
 
 ### 6. Output Format
 
