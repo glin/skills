@@ -49,9 +49,10 @@ fi
 # Optional convenience: pull the cookie from Firefox's (plaintext) cookie store.
 # Copy the DB first so a running Firefox lock does not block the read.
 if [ -z "$token" ] && [ "$use_firefox" = 1 ]; then
-  db=$(ls ~/.mozilla/firefox/*/cookies.sqlite 2>/dev/null | head -1) || true
+  db=$(ls ~/.mozilla/firefox/*/cookies.sqlite \
+       "$HOME/Library/Application Support/Firefox/Profiles/"*/cookies.sqlite 2>/dev/null | head -1) || true
   if [ -n "$db" ] && command -v sqlite3 >/dev/null; then
-    tmpdb=$(mktemp); cp "$db" "$tmpdb"
+    tmpdb=$(mktemp "${TMPDIR:-/tmp}/ghattach.XXXXXX"); cp "$db" "$tmpdb"
     token=$(sqlite3 "$tmpdb" \
       "SELECT value FROM moz_cookies WHERE name='user_session' AND host LIKE '%github.com' LIMIT 1") || true
     rm -f "$tmpdb"
@@ -67,13 +68,13 @@ rid=$(gh api "repos/$repo" --jq .id)
 
 # Step 0: scrape the uploadToken from the repo page (needs write access + a valid session).
 uploadToken=$(curl -sSL -H "$CK" "https://github.com/$repo" \
-  | grep -oP '"uploadToken":"\K[^"]+' | head -1) || true
+  | grep -oE '"uploadToken":"[^"]+"' | head -1 | cut -d'"' -f4) || true
 [ -n "$uploadToken" ] || { echo "gh-attach: no uploadToken (bad session or no write access to $repo)" >&2; exit 1; }
 
 upload_one() {
   local f="$1" name size mime policy upload_url href asset_upload_url finalize_tok
   [ -f "$f" ] || { echo "gh-attach: not a file: $f" >&2; return 1; }
-  name=$(basename "$f"); size=$(stat -c%s "$f"); mime=$(file --mime-type -b "$f")
+  name=$(basename "$f"); size=$(wc -c < "$f" | tr -d ' '); mime=$(file --mime-type -b "$f")
 
   # Step 1: request the S3 presigned policy.
   policy=$(curl -sS -X POST https://github.com/upload/policies/assets "${GH_HDRS[@]}" \
