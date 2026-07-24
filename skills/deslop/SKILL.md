@@ -20,6 +20,7 @@ LLM-assisted work leaves recognizable markers. They are noise to every human rea
 4. **Reviewer-directed narration.** Comments that talk to the person merging the change ("this is correct because", "note that this now handles"), TODO ceremony that restates the diff, apology or hedging language.
 5. **LLM prose tells in user-facing text.** "Let's", "simply", "robust", "seamless(ly)", "comprehensive", "leverage", "delve", "It's important to note", "In summary", bullet-list-with-bold-lead-in walls where prose belongs, emoji headers, "## Overview" boilerplate sections that say nothing.
 6. **Developer vocabulary in user-facing messages.** A console warning, error, or dialog that narrates internals (a record, a merge step, a hook or service name) instead of saying what happened and what the user will notice, in the product's vocabulary.
+7. **ALL-CAPS shouting for emphasis.** `THIS MUST RUN FIRST`, `NEVER do this`, `>> THE ONE LAW <<` in a comment or doc. Write normal sentence case and let the sentence carry the weight. Acronyms (API, HTTP) and code identifiers keep their own case; this is about words capitalised only to shout.
 
 ## Sweep procedure (when invoked on a repo or path)
 
