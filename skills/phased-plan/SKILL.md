@@ -1,18 +1,18 @@
 ---
 name: phased-plan
-description: "Execute a written multi-phase plan across sessions and model tiers: every phase is tagged with who implements and who verifies, one session runs one phase, and the plan file is the only handoff medium. Use when writing a plan too large for one context, when a fresh session must pick up a phase, or when implementer and verifier must not share a context. For delegating a single task to subagents inside one session, use fablecast."
+description: "Execute a written multi-phase plan across sessions and model tiers: every phase is tagged with who implements and who verifies, one session runs one phase, and the plan file is the only handoff medium. Use when writing a plan too large for one context, when a fresh session must pick up a phase, or when implementer and verifier must not share a context. For delegating a single task to subagents inside one session, use delegate."
 ---
 
 # Phased Plan
 
-fablecast delegates inside one session. This is the outer loop: a plan too large
+`delegate` fans out inside one session. This is the outer loop: a plan too large
 for one context, executed phase by phase across sessions, with the plan file
 carrying every decision from one session to the next.
 
 The lead (the expensive interactive model) keeps the judgment: scouting, writing
 the spec, defining the gates, verifying. Delegates (cheaper subagents) execute
 mechanical work against that spec. The delegate-prompt contract itself is
-fablecast's `### 4. Delegate`; invoke that skill and use it as written rather
+the `delegate` skill's `### 4. Delegate`; invoke it and use it as written rather
 than restating it inside the plan.
 
 Invoke this skill at two moments: when WRITING a plan that will outlive one

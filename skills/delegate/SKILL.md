@@ -1,18 +1,20 @@
 ---
-name: fablecast
-description: Orchestrate a non-trivial task. An expensive orchestrator discovers and specs, executor subagents implement in parallel at a tier matched to each unit, and every result is re-verified before it lands. Portable to any repo. Invoke when a task is big enough to split and worth delegating. For a written plan whose phases span multiple sessions, use phased-plan, which invokes this skill inside its delegating phases.
+name: delegate
+description: "Orchestrate a non-trivial task, and keep bulk file reading out of the main context. An expensive orchestrator discovers and specs, executor subagents implement in parallel at a tier matched to each unit, and every result is re-verified before it lands. Saves context tokens by isolating exploration and execution in subagents. Portable to any repo. Use when: delegate this, split this up, fan out, orchestrate, batch of similar edits, multi-file change, migration, broad research, or when answering a question would mean reading many files. For a written plan whose phases span multiple sessions, use phased-plan, which invokes this skill inside its delegating phases."
 ---
 
-# FableCast
+# Delegate
 
 Plan-and-delegate orchestration. The main session (the orchestrator) keeps the
 expensive judgment work (discovery, decomposition, verification) and hands
 tightly-scoped execution to executor subagents, whose tier scales with how much
 judgment the spec leaves them.
 
-Speak in roles, not model names, so the pattern survives model changes: today
-Fable orchestrates and Opus, Sonnet, or Haiku execute depending on the unit, but
-the roles do not change when the models rotate.
+Speak in roles, not model names, so the pattern survives model changes. The
+orchestrator is whatever model the interactive session already runs; it is not
+selectable from here. Executors are spawned per unit at the top, middle, or
+cheapest tier. A top-tier orchestrator with middle-tier executors is the common
+shape, not a compromise.
 
 ## When to use, when not
 
@@ -104,7 +106,9 @@ regressed, restore the known-good state before re-delegating.
 
 ### 6. Report
 Summarize what each executor did, any deviations, and the verified delta against
-the baseline.
+the baseline. Do not re-quote an executor's full report in later turns; isolating
+it only pays off if its raw output never enters this context. Refer back by unit
+and finding instead.
 
 ## Why the asymmetry matters
 
