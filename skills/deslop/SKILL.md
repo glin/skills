@@ -21,9 +21,11 @@ LLM-assisted work leaves recognizable markers. They are noise to every human rea
 5. **LLM prose tells in user-facing text.** "Let's", "simply", "robust", "seamless(ly)", "comprehensive", "leverage", "delve", "It's important to note", "In summary", bullet-list-with-bold-lead-in walls where prose belongs, emoji headers, "## Overview" boilerplate sections that say nothing.
 6. **Developer vocabulary in user-facing messages.** A console warning, error, or dialog that narrates internals (a record, a merge step, a hook or service name) instead of saying what happened and what the user will notice, in the product's vocabulary.
 7. **ALL-CAPS shouting for emphasis.** `THIS MUST RUN FIRST`, `NEVER do this`, `>> THE ONE LAW <<` in a comment or doc. Write normal sentence case and let the sentence carry the weight. Acronyms (API, HTTP) and code identifiers keep their own case; this is about words capitalised only to shout.
+8. **Comments that are wrong about the code.** An invented name for something the code already names, a doc block left on the wrong member after an insertion, a claim the lines below contradict. No vocabulary grep finds these; read each comment against the member it sits on.
 
 ## Sweep procedure (when invoked on a repo or path)
 
+0. If the target language has its own doc-comment system, or the repo carries a deslop annex for its toolchain, read that first: the structural defects (invalid tags, misbound doc blocks, generated names a comment gets wrong) are language-specific and invisible to the grep below.
 1. Grep for the marker vocabulary above plus date patterns (`20\d\d-\d\d-\d\d`) in code comments and user-facing docs. Build the hit list before editing anything.
 2. Classify each hit: exempt location (leave), genuine contract (rewrite timelessly), process narration (delete or relocate).
 3. Rewrite, do not just delete: a slop comment often marks a real constraint; keep the constraint, drop the story. If deleting would lose real history, move it to the repo's dev log or decision doc, and leave no link behind in the code.
