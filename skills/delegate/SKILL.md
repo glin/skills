@@ -73,15 +73,20 @@ above). Every executor prompt carries five things:
 4. The exact verification command and the result required to pass.
 5. A request for an honest report, including any deviations.
 
-In Claude Code, spawn executors with the Agent tool and set `model` on EVERY
-spawn. A subagent with no `model` inherits the parent's, so a top-tier session
-that fans out search or scouting agents without setting it is paying top-tier
-rates to grep. Match the tier to the unit:
+Model selection depends on the agent client:
 
-- Read-only search, file location, convention sweeps: the cheapest tier
-  (`model: haiku`). This is the default for exploration, never the parent's tier.
-- Implementation the spec fully determines: the middle tier (`model: sonnet`).
-- Units that stay hard even when fully specified: the top tier (`model: opus`).
+- **Codex with Amazon Bedrock:** omit `model` and `reasoning_effort` from
+  Agent spawns so the child inherits the configured provider-qualified model.
+  Before a large fan-out, run one minimal canary spawn. If it fails, stop and
+  diagnose the first error instead of trying alternate model names.
+- **Codex with providers that accept explicit Agent model overrides:** set
+  `model` on every spawn and match the tier to the unit:
+  - Read-only search, file location, and convention sweeps use the cheapest tier.
+  - Fully specified implementation uses the middle tier.
+  - Work that stays hard after specification uses the top tier.
+- **Claude Code:** set `model` on every Agent spawn. Use `haiku` for
+  read-only search, `sonnet` for fully specified implementation, and `opus`
+  only when the unit stays hard after specification.
 
 Discovery and verification are the two things never pushed downward; they are why
 the orchestrator is expensive. The role split, not the price tag, is what makes
