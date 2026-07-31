@@ -28,11 +28,11 @@ When citing a learning, name the concrete trigger (`file:line`, command, or erro
 
 ### 2. Prefer an Executable Guard, Then Pick a Target File
 
-**A guard beats prose.** If regressing this learning could be caught by a test, assertion, lint rule, or type, propose that first, and write a doc note only for the part no guard can catch. A red build stops drift; a paragraph only hopes someone reads it (and won't, eventually). Rank the options: single source of truth by construction > a type that won't compile on mismatch > a test or lint that fails on regression > a prose note. Name the concrete guard (test name, assertion site). This matters most for diverging-source-of-truth bugs: two places deriving the same value from different sources is exactly what a note fails to prevent and a test catches.
+**A guard beats prose.** If regressing this learning could be caught by a test, assertion, lint rule, or type, propose that first, and write a doc note only for the part no guard can catch. A red build stops drift; a paragraph only hopes someone reads it (and won't, eventually). Rank the options: single source of truth by construction > a type that won't compile on mismatch > a test or lint that fails on regression > a message the tool prints where the reader hits the problem > a prose note. Name the concrete guard (test name, assertion site). This matters most for diverging-source-of-truth bugs: two places deriving the same value from different sources is exactly what a note fails to prevent and a test catches.
 
 For the residue that stays prose: prefer inline source comments when the learning is specific to a code location (e.g., "this value must match X in file Y"). Prefer doc files (`README.md`, `CLAUDE.md`, `.github/` templates) when the learning is a general convention or workflow. Prefer shared docs (README) over AI-only docs (CLAUDE.md) when the convention applies to all developers.
 
-Before proposing an addition, grep the target file for similar content. Do not suggest adding things that are already documented.
+Before proposing an addition, grep the target file for similar content. Do not suggest adding things that are already documented. Grep the tool's user-visible strings too (error messages, `--help`, report labels): a fact already stated where the reader hits the problem makes a doc note duplication, so the doc keeps only what no output carries.
 
 Do not create memory files. All learnings go into version-controlled files.
 
