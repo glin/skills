@@ -27,10 +27,11 @@ LLM-assisted work leaves recognizable markers. They are noise to every human rea
 ## Sweep procedure (when invoked on a repo or path)
 
 0. If the target language has its own doc-comment system, or the repo carries a deslop annex for its toolchain, read that first: the structural defects (invalid tags, misbound doc blocks, generated names a comment gets wrong) are language-specific and invisible to the grep below.
-1. Grep for the marker vocabulary above plus date patterns (`20\d\d-\d\d-\d\d`) in code comments and user-facing docs. Build the hit list before editing anything.
-2. Classify each hit: exempt location (leave), genuine contract (rewrite timelessly), process narration (delete or relocate).
-3. Rewrite, do not just delete: a slop comment often marks a real constraint; keep the constraint, drop the story. If deleting would lose real history, move it to the repo's dev log or decision doc, and leave no link behind in the code.
-4. Report the sweep as a table: file, before-gist, action taken.
+1. Grep for the marker vocabulary above plus date patterns (`20\d\d-\d\d-\d\d`) in code comments and user-facing docs. Build the first hit list.
+2. Then read the files, before editing anything. Grep matches vocabulary and nothing else, so rules 4, 7 and 9 never reach the hit list on their own: a comment that contradicts the lines below it, a doc block stranded on the wrong member, an invented name for something the code already names, narration aimed at a reviewer, a phrase worn into a tic. None of those need a marker word, and in a file swept before they are most of what is left. Read every comment against the member it sits on, count any phrase that recurs, and add what you find. A sweep that skips this step has checked the vocabulary and not the writing.
+3. Classify each hit: exempt location (leave), genuine contract (rewrite timelessly), process narration (delete or relocate).
+4. Rewrite, do not just delete: a slop comment often marks a real constraint; keep the constraint, drop the story. If deleting would lose real history, move it to the repo's dev log or decision doc, and leave no link behind in the code.
+5. Report the sweep as a table: file, before-gist, action taken, and which pass found it. A table whose rows all came from grep is a report that step 2 did not run.
 
 Related: the `rewrite` skill transforms prose for a human to read or post (re-explaining word soup, rewriting drafts); deslop removes and prevents the markers in the artifacts themselves.
 
