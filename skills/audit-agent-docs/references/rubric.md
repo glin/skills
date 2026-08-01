@@ -87,7 +87,7 @@ and one that gets forgotten, and the forgotten one keeps being read as current.
 | Stale reference | a named file or directory that does not exist in the repo | warn |
 | Prose restating an executable guard | a symbol the repo defines, named in the prose | info |
 | Parenthetical carrying a case study | over 25 words inside parentheses | warn |
-| Dated provenance | "confirmed 2026-07-02", "fixed 2026-06-07" | warn |
+| Dated provenance | "confirmed 2026-07-02", "fixed 2026-06-07" | info |
 | A pointer next to a retelling | bullet over 45 words that also cites a file | warn |
 | Near-duplicate bullets | 50% shared 6-word runs | warn |
 | Pasted code where a reference would do | code block over 12 lines | info |
@@ -127,6 +127,11 @@ A pointer is the fix, not the defect. `See docs/x.md` replacing a story is
 progressive disclosure working. The defect is the story plus the pointer, which pays
 for the evidence twice. That is why the rule keys on length rather than on the
 presence of a path.
+
+Dated provenance reports at info rather than warn. A date on a rule about external
+behaviour is a claim about when that behaviour was last checked, which is worth
+having in a file that is deliberately a ledger. Treat each one as a prompt to
+re-confirm the rule, not as text to delete.
 
 ## What the script deliberately does not check
 

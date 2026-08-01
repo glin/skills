@@ -495,10 +495,12 @@ function auditClaudeMd(file, root) {
     }
   }
 
-  // Dated provenance: fine in a ledger, noise in a rule.
+  // A date attached to a rule is a claim about when it was last true, which is
+  // useful in a file that is explicitly a ledger. It is reported so it can be
+  // re-checked, not because it should be removed.
   for (const m of prose.matchAll(/\(?(confirmed|verified|fixed|added|review(?:ed)?|as of)\s+20\d\d-\d\d(-\d\d)?\)?/gi)) {
     const line = text.slice(0, m.index).split(/\r?\n/).length;
-    report("warn", t, "dated-provenance", `line ${line}: "${m[0]}"`);
+    report("info", t, "dated-provenance", `line ${line}: "${m[0]}", worth re-confirming`);
   }
 
   // A pointer next to a retelling is the real defect; a pointer alone is the fix.
