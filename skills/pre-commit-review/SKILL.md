@@ -53,6 +53,15 @@ If multiple models are specified (e.g., `/pre-commit-review opus sonnet`), run o
 
 If no models are specified, default to **Claude Opus 4.8 + Claude Sonnet 5 in parallel**; if the current session model is one of these, omit the `model` parameter for it. On a nontrivial diff the two Claude models reliably catch *different* real issues, so a single pass drops findings; neither model is a superset of the other. Sonnet does over-report, so adjudicate the merged list rather than trusting volume. For a small or trivial change, pass one model (e.g. `/pre-commit-review opus`) to skip the second pass. A subagent is always used to isolate the review from the main session and save context tokens.
 
+**OpenAI reviewer without `runSubagent`:** where the harness cannot target GPT directly (e.g.
+Claude Code), shell out to the codex CLI as a background task:
+`codex exec --sandbox read-only "<review prompt naming the commit hash>"`. Point it at a
+commit (it reads the repo itself; do not pipe the diff through stdin), state the invariants
+the change must hold, and demand ranked findings with file:line and a concrete failure
+scenario each. A deep review runs past a 10-minute foreground timeout and costs roughly 200k
+tokens - spend it on risky features, not routine diffs. Full gotcha list: `consult/SKILL.md`,
+"Dispatch route: OpenAI models via the codex CLI".
+
 ### 3. Launch Review Subagent(s)
 
 For each requested review, call `runSubagent` with:

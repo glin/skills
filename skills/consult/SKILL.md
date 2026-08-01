@@ -61,6 +61,24 @@ If multiple models are specified, run one subagent per model **in parallel** in 
 
 If no models are specified, default to Claude Opus 4.8 + Claude Sonnet 5 in parallel. If the current session model is one of these, omit the `model` parameter for it.
 
+### Dispatch route: OpenAI models via the codex CLI (shell)
+
+Where `runSubagent` cannot target an OpenAI model (e.g. Claude Code), dispatch GPT through the
+codex CLI as a shell task: `codex exec --sandbox read-only "<self-contained prompt>"` (uses the
+CLI's configured default model, currently GPT-5.6 Sol; override with `-c model=...`). Gotchas,
+each learned from a real run:
+
+- A deep run outlives a 10-minute foreground shell timeout. Run it in the background and read
+  the output file on completion.
+- Do not pipe large diffs or files through stdin. The read-only sandbox lets codex read the
+  repo itself: name a commit hash or file paths and let it run its own git and reads - it also
+  finds surrounding context stdin would have hidden.
+- Output is a session transcript with the answer at the tail. Demand a strict deliverable
+  format in the prompt ("ranked findings, file:line, concrete failure scenario") so the tail
+  is directly usable without parsing the transcript.
+- Calibration: one deep code review is roughly 200k tokens and 25 minutes. Right for a
+  risky-feature gate or a genuinely hard design question; wrong for routine checks.
+
 ### 3. Construct the Consult Prompt
 
 Write a single self-contained prompt that you will send to every subagent. Include:
