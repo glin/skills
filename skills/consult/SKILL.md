@@ -38,28 +38,13 @@ For non-trivial consults, specifically confirm with the user: (a) the candidate 
 
 The user may specify models in the argument. Parse the argument to identify requested models:
 
-<!-- LAST REVIEWED: 2026-07. Bump model versions here quarterly; this table is the source of truth for the `consult` and `pre-commit-review` skills. -->
-
-| Shorthand | Model name |
-|-----------|------------|
-| (none/blank) | Claude Opus 4.8 + Claude Sonnet 5 in parallel |
-| `opus` | Claude Opus 4.8 |
-| `sonnet` | Claude Sonnet 5 |
-| `fable` | Claude Fable 5 |
-| `gpt` | GPT-5.5 |
-| `codex` | GPT-5.3 Codex |
-| `gemini` | Gemini 3.1 Pro |
-| `flash` | Gemini 3.5 Flash |
-| `all` | opus + sonnet + gpt + gemini in parallel |
-
-**Model parameter format varies by environment.** Check what `runSubagent` expects:
-- If the tool docs specify a format like `"Name (Vendor)"`, append the vendor (e.g., `Claude Opus 4.8 (copilot)`).
-- If the tool accepts plain model names or IDs, use the model name directly.
-- When in doubt, check the `runSubagent` tool's `model` parameter description for the expected format.
+The shorthands, and how to pass a model to `runSubagent`, are in
+[../references/models.md](../references/models.md). Read it rather than assuming a
+version; `pre-commit-review` shares that file, so neither skill carries its own copy.
 
 If multiple models are specified, run one subagent per model **in parallel** in a single tool-call block.
 
-If no models are specified, default to Claude Opus 4.8 + Claude Sonnet 5 in parallel. If the current session model is one of these, omit the `model` parameter for it.
+If no models are specified, use the blank-argument default from that table. If the current session model is one of those, omit the `model` parameter for it.
 
 ### Dispatch route: OpenAI models via the codex CLI (shell)
 
