@@ -36,8 +36,10 @@ overhead loses. Just do it inline.
   even fully specified. If a unit needs top-tier reasoning to make design calls,
   that is judgment leaking downward, pull it back into the orchestrator rather
   than just buying a smarter executor.
-- **Verifier** (optional, fresh-context subagent): adversarially checks a
-  high-stakes result. Use for risky or hard-to-reverse changes.
+- **Verifier** (fresh-context subagent): adversarially checks a result. Use for
+  risky or hard-to-reverse changes, and whenever several executors contributed:
+  re-verification checks each unit against its own spec, so a hole in the spec
+  passes every unit and still ships.
 
 ## Procedure
 
@@ -51,13 +53,18 @@ correctness is won:
 - The verification command (test, build, lint, run) and how to exercise the change.
 - The baseline: what passes now, and the base commit. Record both.
 - The files, conventions, and any gotchas an executor could not discover on its own.
+- Any resource only one unit can hold at a time: a long-running process, a device,
+  a licence seat, a shared service instance.
 
 Put what you learn in writing. It becomes the executors' context.
 
 ### 3. Decompose
 Split into executor-sized units. Prefer clean file boundaries so units run in
 parallel without conflict; use an ordered pipeline when one unit depends on
-another. Name exactly what each unit may touch. For a large fan-out, pass the
+another. Name exactly what each unit may touch. Size the waves to how many
+executors the runtime actually runs at once, not to how many could run without
+conflict; past that cap the rest queue and the plan stops describing what is
+running. For a large fan-out, pass the
 written spec through a fresh-context critic before delegating: a conflicting or
 wrong instruction here multiplies across every executor, and it is far cheaper to
 catch in the spec than in N parallel diffs.
@@ -95,7 +102,12 @@ command that mutates shared state (`git stash`/`reset`/`checkout`/`clean`, or a
 formatter or build that rewrites shared files or caches): non-overlapping edits
 still collide through a shared git index or build cache, so a sibling's `stash`
 or `reset` can silently wipe another unit's work. A unit that must build or run
-repo-wide tooling gets its own worktree. For a scripted, repeatable
+repo-wide tooling gets its own worktree. A resource no worktree can duplicate
+(step 2) is yours alone: forbid executors from touching it and batch its use
+between waves. That restraint binds you too while executors are live, since an
+executor cannot tell your temporary breakage from a real failure: commit before
+deliberately breaking anything, restore with git rather than by hand, and never
+carry a break across a wave boundary. For a scripted, repeatable
 fan-out over a known work-list, reach for the Workflow tool instead; use this
 skill for model-driven planning.
 
