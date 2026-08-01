@@ -466,8 +466,13 @@ function auditClaudeMd(file, root) {
   // section that happens to be top of mind.
   const sections = [];
   let currentSection = { title: "(preamble)", start: 1, lines: [] };
+  let inFence = false;
   lines.forEach((l, i) => {
-    if (/^##\s+\S/.test(l)) {
+    // A heading inside a fenced block is sample content, not a section of this
+    // file. A plan template full of `## Steps` would otherwise split the file
+    // into fragments and hide where the mass really is.
+    if (/^\s*```/.test(l)) inFence = !inFence;
+    if (!inFence && /^##\s+\S/.test(l)) {
       sections.push(currentSection);
       currentSection = { title: l.replace(/^#+\s*/, ""), start: i + 1, lines: [] };
     } else currentSection.lines.push(l);
