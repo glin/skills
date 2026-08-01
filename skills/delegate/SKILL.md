@@ -61,10 +61,10 @@ Put what you learn in writing. It becomes the executors' context.
 ### 3. Decompose
 Split into executor-sized units. Prefer clean file boundaries so units run in
 parallel without conflict; use an ordered pipeline when one unit depends on
-another. Name exactly what each unit may touch. Size the waves to how many
-executors the runtime actually runs at once, not to how many could run without
-conflict; past that cap the rest queue and the plan stops describing what is
-running. For a large fan-out, pass the
+another. Name exactly what each unit may touch. Size waves to how many executors
+the runtime runs at once, not to how many could run without conflict: the
+surplus queues silently, so a written plan naming more stops describing the run.
+For a large fan-out, pass the
 written spec through a fresh-context critic before delegating: a conflicting or
 wrong instruction here multiplies across every executor, and it is far cheaper to
 catch in the spec than in N parallel diffs.
