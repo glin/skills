@@ -11,8 +11,8 @@ This is a checklist, not ceremony. Do the steps that apply, skip the ones that d
 
 ## Hard rules
 
-- Read-only toward the outside world. Do NOT post to GitHub, send messages, or run any mutating command as part of prep. Persisting is to local files (and reporting what already exists on GitHub), never new posts. This respects the user's standing "never post unless explicitly told" rule.
-- Persist to the RIGHT place: a checked-in project doc for findings, NOT ephemeral memory and NOT the scratchpad (scratchpad is wiped; memory is for cross-session user/project facts, not this session's investigation results). If a project doc already tracks this work, append to it rather than starting a new file.
+- Read-only toward the outside world. Do not post to GitHub, send messages, or run any mutating command as part of prep. Persisting is to local files (and reporting what already exists on GitHub), never new posts. This respects the user's standing "never post unless explicitly told" rule.
+- Persist to the right place: a checked-in project doc for findings, not ephemeral memory and not the scratchpad (scratchpad is wiped; memory is for cross-session user/project facts, not this session's investigation results). If a project doc already tracks this work, append to it rather than starting a new file.
 - Do not summarize away specifics. Keep exact numbers, IDs, paths, commit SHAs, and verified command output. The whole point is that the summary will already do the lossy version.
 - Do not start new investigation. Prep captures what is known; it does not go find more. If the user deferred something ("investigate further after compaction"), record it as an open thread and stop.
 
@@ -20,7 +20,7 @@ This is a checklist, not ceremony. Do the steps that apply, skip the ones that d
 
 ### 1. Identify conversation-only state
 
-Scan the session for anything that exists ONLY in the chat, not yet on disk or GitHub:
+Scan the session for anything that exists only in the chat, not yet on disk or GitHub:
 
 - Findings and conclusions from investigation (root causes, verified chains, quantifications).
 - Decisions made and the reasoning behind them.
@@ -32,7 +32,7 @@ Scan the session for anything that exists ONLY in the chat, not yet on disk or G
 
 - Findings and decisions -> append to the checked-in project doc that tracks this work (e.g. a `docs/PLAN-*.md` or `docs/*.md`). Date the section. Use the plan-doc convention if the repo has one.
 - Drafted artifacts -> confirm they are saved as files (scratchpad is fine for drafts, but note the path in the durable doc so it survives the summary, since the summary won't preserve scratchpad contents reliably; if a draft must not be lost, copy it into the durable doc).
-- Do NOT create a memory file for session-specific investigation results. Memory is for durable user/project facts. (If a genuinely cross-session fact surfaced, that is a separate `/remember`-style action, not part of compaction prep.)
+- Do not create a memory file for session-specific investigation results. Memory is for durable user/project facts. (If a genuinely cross-session fact surfaced, that is a separate `/remember`-style action, not part of compaction prep.)
 
 ### 3. Write a resume block
 

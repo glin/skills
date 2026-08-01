@@ -8,11 +8,11 @@ argument-hint: "[optional: 'update' to revise an existing PR, or a base ref like
 
 Produce a pull request title and body that matches the repository's conventions. Output only. Do not create, edit, push, or comment on anything.
 
-## Hard Rules (Do NOT)
+## Hard rules
 
-- Do NOT run `gh pr create`, `gh pr edit`, `gh pr comment`, or any mutating `gh` command.
-- Do NOT run `git commit`, `git push`, `git tag`, or modify refs.
-- Do NOT write the draft to a file unless the user explicitly asks.
+- Do not run `gh pr create`, `gh pr edit`, `gh pr comment`, or any mutating `gh` command.
+- Do not run `git commit`, `git push`, `git tag`, or modify refs.
+- Do not write the draft to a file unless the user explicitly asks.
 - Output the draft inline in the chat in a fenced block.
 
 Read-only commands are fine: `git diff`, `git log`, `gh pr view`, `gh pr list`, `gh repo view`.
@@ -45,7 +45,7 @@ Pick the diff range, in this order:
 
 Also collect:
 
-- `git log --oneline <base>..HEAD` (commit subjects only, for context and style detection, NOT to be committed or amended).
+- `git log --oneline <base>..HEAD` (commit subjects only, for context and style detection, not to be committed or amended).
 - Changed file list and a summary of additions/deletions.
 
 ### 2. Detect Repo Conventions
@@ -74,7 +74,7 @@ Check, in parallel where possible:
 - Match the tone and length of recent merged PRs.
 - Reference issues only if found in commit messages or branch name (e.g., `Closes #123`). Do not invent issue numbers.
 - Do not include secrets, tokens, file contents from `.env`, or large diffs.
-- Do NOT hard-wrap prose. Write each paragraph and bullet as a single line and let it soft-wrap; GitHub renders manual line breaks literally, so hard-wrapping produces ragged text. Only break lines where markdown requires it (list items, table rows, fenced/indented code blocks).
+- Do not hard-wrap prose. Write each paragraph and bullet as a single line and let it soft-wrap; GitHub renders manual line breaks literally, so hard-wrapping produces ragged text. Only break lines where markdown requires it (list items, table rows, fenced/indented code blocks).
 
 ### 5. Update Mode (if requested)
 
@@ -84,7 +84,7 @@ If the user asked to update or revise an existing PR:
 2. Read the current body.
 3. Produce the revised title and body.
 4. Show a brief diff or summary of what changed versus the original.
-5. Still do NOT run `gh pr edit`. Tell the user the exact command they can run, e.g.:
+5. Still do not run `gh pr edit`. Tell the user the exact command they can run, e.g.:
    ```
    gh pr edit <N> --title "..." --body-file -
    ```

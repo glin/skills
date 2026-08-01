@@ -1,6 +1,6 @@
 ---
 name: draft-gh-issue
-description: "Draft a GitHub issue (title + body) matching the target repo's issue template and conventions. Draft-only by default; creates the issue ONLY when explicitly told to open/create/file/submit. Use when: draft an issue, write a bug report, file an issue, open an issue, feature request, prep an issue for repo X."
+description: "Draft a GitHub issue (title + body) matching the target repo's issue template and conventions. Draft-only by default; creates the issue only when explicitly told to open/create/file/submit. Use when: draft an issue, write a bug report, file an issue, open an issue, feature request, prep an issue for repo X."
 argument-hint: "[optional: target 'owner/repo', or 'open'/'create' to actually file it]"
 ---
 
@@ -11,13 +11,13 @@ Produce a GitHub issue title and body that matches the target repository's issue
 ## Hard Rules
 
 Behavior:
-- Draft-only by default. Do NOT run `gh issue create` or any mutating command unless the user explicitly says open/create/file/submit this issue.
+- Draft-only by default. Do not run `gh issue create` or any mutating command unless the user explicitly says open/create/file/submit this issue.
 - When explicitly told to create, use `gh issue create --repo OWNER/REPO --title "..." [--label ...] --body-file PATH`. Use `--body-file` (never `--body`) so backticks survive the shell. Confirm the target repo and any labels first, then return the created issue URL.
 - Read-only commands are always fine: `gh issue view/list`, `gh repo view`, `gh search`, `git log/diff`.
 
 Formatting invariants (these are the whole point of this skill; get them right every time):
 - **No YAML frontmatter in the body.** A repo issue template opens with a `--- name/about/labels ---` block. That is form configuration, not content. Use the template's section *headings* only; never paste its frontmatter into the issue.
-- **No hard line-wrapping.** GitHub renders a single newline inside a paragraph as a line break, so editor-style wrapping at ~80/90 columns produces ragged mid-sentence breaks. Write each paragraph as ONE physical line. Only code fences and list items keep their own line structure. (Repo markdown files are different: wrapping there is fine.)
+- **No hard line-wrapping.** GitHub renders a single newline inside a paragraph as a line break, so editor-style wrapping at ~80/90 columns produces ragged mid-sentence breaks. Write each paragraph as one physical line. Only code fences and list items keep their own line structure. (Repo markdown files are different: wrapping there is fine.)
 - **No em dashes.** Per the deslop skill and the user's standing rule. Use commas, colons, parentheses, or "to" for ranges.
 - **Cross-repo references need a resolvable form.** A bare `#123` only links within the repo the issue lives in. When you reference an issue/PR in a *different* repo (common: the issue is filed in repo A about work in repo B), write `owner/repo#123` or a full `https://github.com/owner/repo/(issues|pull)/123` URL. Verify the number and type (issue vs pull) before linking. Link direction respects visibility: a private repo may link public ones, but anything in a public repo must never reference a private repo (no `owner/repo#N`, no URLs); describe private context generically and cross-link from the private side.
 - **Concise, humane prose.** Apply the `deslop` skill's prevention rules and prose tell-list (no "simply/robust/seamless/leverage/comprehensive", no bold-lead-in bullet walls where prose belongs, no "## Overview" boilerplate). Say the thing plainly. Cut qualifier soup.

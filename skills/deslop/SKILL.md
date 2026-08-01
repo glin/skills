@@ -9,14 +9,14 @@ LLM-assisted work leaves recognizable markers. They are noise to every human rea
 
 ## Where the rules apply
 
-- ALWAYS: source code comments, READMEs, user-facing documentation, UI strings, error messages, public API docs.
-- EXEMPT: internal dev ledgers and audit-style docs (dependency/license tables, decision logs, roadmaps, plan files, CHANGELOGs) - dates and provenance are the point there. Agent instruction files (CLAUDE.md and similar) are internal.
+- Always: source code comments, READMEs, user-facing documentation, UI strings, error messages, public API docs.
+- Exempt: internal dev ledgers and audit-style docs (dependency/license tables, decision logs, roadmaps, plan files, CHANGELOGs) - dates and provenance are the point there. Agent instruction files (CLAUDE.md and similar) are internal.
 
 ## What counts as slop
 
 1. **Agent-process jargon in code or docs.** Words that describe the agent's verification process, not the software: "kill test", "oracle", "probe", "load-bearing", "belt and suspenders", "greppable", "scouted", "falsified", "smoke-tested this by...". State what the code does and the constraint it satisfies.
 2. **Dated provenance comments.** `// fixed 2026-07-06`, `(review 2026-07-06)`, `(user feedback yesterday)`, "since the X fix landed". Git blame carries provenance; a comment states the current contract, timelessly.
-3. **References to superseded states.** Comments that explain the code by contrast with what it used to be or with a decision process: "no longer uses X because...", "we decided against Y", "passed its test so now Z". Describe what IS, and only the parts of why that a maintainer needs.
+3. **References to superseded states.** Comments that explain the code by contrast with what it used to be or with a decision process: "no longer uses X because...", "we decided against Y", "passed its test so now Z". Describe the present behaviour, and only the parts of why a maintainer needs.
 4. **Reviewer-directed narration.** Comments that talk to the person merging the change ("this is correct because", "note that this now handles"), TODO ceremony that restates the diff, apology or hedging language.
 5. **LLM prose tells in user-facing text.** "Let's", "simply", "robust", "seamless(ly)", "comprehensive", "leverage", "delve", "It's important to note", "In summary", bullet-list-with-bold-lead-in walls where prose belongs, emoji headers, "## Overview" boilerplate sections that say nothing.
 6. **Developer vocabulary in user-facing messages.** A console warning, error, or dialog that narrates internals (a record, a merge step, a hook or service name) instead of saying what happened and what the user will notice, in the product's vocabulary.

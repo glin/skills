@@ -15,8 +15,8 @@ mechanical work against that spec. The delegate-prompt contract itself is
 the `delegate` skill's `### 4. Delegate`; invoke it and use it as written rather
 than restating it inside the plan.
 
-Invoke this skill at two moments: when WRITING a plan that will outlive one
-context, and when a fresh session OPENS one.
+Invoke this skill at two moments: when writing a plan that will outlive one
+context, and when a fresh session opens one.
 
 ## Tag every phase before execution starts
 
@@ -43,7 +43,7 @@ role from the plan alone, with no conversational context.
   alone.
 - Only the human can compact or open a session, so the end-of-phase report states
   exactly what to do next ("compact now, then say 'start phase N'").
-- Do NOT split the plan into per-phase files. Phases share decisions and
+- Do not split the plan into per-phase files. Phases share decisions and
   taxonomies, and a split invites drift the moment one phase revises a shared
   decision. Delegate prompts quote the relevant plan sections verbatim instead.
 
@@ -52,10 +52,10 @@ role from the plan alone, with no conversational context.
 A phase is not ready to delegate until the plan states a gate the lead can run
 against the output.
 
-- Define the gate as a property of the OUTPUT ("zero writers of class X survive
+- Define the gate as a property of the output ("zero writers of class X survive
   on the artifact"), not of the effort ("the strip code was added"). An output
   property catches paths the implementer never considered.
-- Record the expected numbers, from the scouted baseline, in the plan BEFORE the
+- Record the expected numbers, from the scouted baseline, in the plan before the
   phase runs. A predicted-then-observed match is much stronger than a number
   rationalized after the fact, and a mismatch is a finding either way.
 - Every exception the spec grants (an opt-out, a keep list) is re-checked against

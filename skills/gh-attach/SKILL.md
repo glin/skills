@@ -18,7 +18,7 @@ The script is `gh-attach.sh` in this skill's directory.
 ## Prerequisites
 
 - `curl`, `jq`, `file`, and `gh` on PATH (`sqlite3` too, only for `--firefox`).
-- A github.com **`user_session`** cookie. This is NOT the `gh` OAuth token; that token does not work on the attachment endpoint. The script resolves it in this order: `--token`, `$GH_SESSION_TOKEN`, the token file `${XDG_CONFIG_HOME:-~/.config}/gh-attach/token`, then `--firefox`.
+- A github.com **`user_session`** cookie. This is not the `gh` OAuth token; that token does not work on the attachment endpoint. The script resolves it in this order: `--token`, `$GH_SESSION_TOKEN`, the token file `${XDG_CONFIG_HOME:-~/.config}/gh-attach/token`, then `--firefox`.
 
 ### Getting the cookie
 

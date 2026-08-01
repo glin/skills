@@ -124,7 +124,7 @@ If there are no issues, say so clearly. Do not fabricate issues.
 
 After all subagent(s) return:
 
-**Context management:** The subagent responses contain the full review output. Present a concise summary to the user (findings table + verdict). Do NOT quote the full raw response in subsequent turns - summarize it once, then refer back to specific findings by number if the user asks follow-up questions.
+**Context management:** The subagent responses contain the full review output. Present a concise summary to the user (findings table + verdict). Do not quote the full raw response in subsequent turns - summarize it once, then refer back to specific findings by number if the user asks follow-up questions.
 
 **For multi-model reviews**, present a single unified findings table:
 

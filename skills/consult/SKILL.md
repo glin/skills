@@ -18,7 +18,7 @@ Hand off a problem or prompt to multiple independent subagents running on differ
 - Want to compare how different models approach the same prompt
 - You catch yourself about to paste the same question into multiple model chats
 
-## When NOT to Use
+## When not to use
 
 - Simple questions with one clear answer (just answer them)
 - Tasks that require shared state or sequential reasoning across agents
@@ -74,7 +74,7 @@ Write a single self-contained prompt that you will send to every subagent. Inclu
 - **What you want back**: Concrete deliverable. A diagnosis? A design proposal? Multiple candidate solutions with tradeoffs? Pseudocode? A direct answer?
 - **Scope limits**: Read-only vs. write. Almost always read-only for a consult. Tell the subagent explicitly: "Do not edit files. Return your analysis as text."
 
-Subagents should reason independently. Do NOT tell them what other models are being asked or what answer is expected. Each one should form its view from the prompt alone.
+Subagents should reason independently. Do not tell them what other models are being asked or what answer is expected. Each one should form its view from the prompt alone.
 
 Deduplicate candidate options before dispatching. If two labeled options are functionally equivalent (e.g. "F = A"), collapse them. Redundant options waste panel attention and clutter the synthesis.
 
@@ -91,7 +91,7 @@ Launch all subagents in a single tool-call block so they run in parallel. Do not
 
 ### 5. Synthesize Results
 
-After all subagents return, present a synthesis to the user. Do NOT dump the full raw responses. Aim for:
+After all subagents return, present a synthesis to the user. Do not dump the full raw responses. Aim for:
 
 **Convergence summary** (1-3 sentences): Where do the models agree? Convergence across independent models is a strong signal.
 
