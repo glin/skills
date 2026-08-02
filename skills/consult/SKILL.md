@@ -1,6 +1,6 @@
 ---
 name: consult
-description: "Hand off a hard problem to multiple independent agents using different models in parallel, then synthesize their answers. Use when: stuck on a hard problem, no obvious solution, want multi-model perspectives, consult panel, brainstorm with models, second opinion on tricky design. Saves context tokens by running consultations in isolated subagents."
+description: "Hand off a hard problem to multiple independent agents using different models in parallel, synthesize their answers, and run a falsification round on any design proposal before it is built. Use when: stuck on a hard problem, no obvious solution, want multi-model perspectives, consult panel, brainstorm with models, second opinion on tricky design, want a proposal attacked before committing to it. Saves context tokens by running consultations in isolated subagents."
 argument-hint: "[models...] e.g. 'opus gpt gemini' or blank for current model + sonnet"
 ---
 
@@ -64,17 +64,33 @@ each learned from a real run:
 - Calibration: one deep code review is roughly 200k tokens and 25 minutes. Right for a
   risky-feature gate or a genuinely hard design question; wrong for routine checks.
 
+### Handoff files for consults that run outside any harness
+
+When the consult is an external web chat that cannot touch the repo, the handoff file stands in
+for the repository and must carry what its reader can no longer go and check:
+
+- file:line evidence for every load-bearing claim, each marked measured or reasoned.
+- The requirement list marked as attackable, in as many words: "if a premise here is wrong,
+  saying so is the most valuable thing you can return."
+- The dead-end ledger in varied / held-fixed form, with the constraint each failure established.
+
+However good the handoff, the answer is frame-bound by construction. Re-verify its premises
+against the source before anything is built on it.
+
 ### 3. Construct the Consult Prompt
 
 Write a single self-contained prompt that you will send to every subagent. Include:
 
 - **Problem statement**: What is being asked. Be precise.
-- **Context**: Relevant code, file paths, constraints, prior attempts, error messages. Quote inline rather than relying on the subagent to find it. If files are needed, list absolute paths and tell the subagent to read them.
-- **What's been tried**: Approaches the main session has already considered or ruled out, and why.
+- **Context, and the repository itself**: Give the consult the source, not only your summary of it. Quote your conclusions inline, but have the consult verify the premises at the source: list the entry-point files as absolute paths and require that every load-bearing claim it relies on be checked against the code rather than accepted from the prompt. The fact that decides a hard problem is usually one the summary dropped - an invariant stated in a comment, a helper that already exists, a wiring detail.
+- **Frame-bound consults**: A consult that cannot reach the source, such as an external chat, can only rearrange the frame you handed it. Say so in the synthesis, and treat its silence about source-level constraints as unknown rather than as clearance. Its premises must be re-verified against the code before anything is built on its answer.
+- **What's been tried**: For each dead end, what you varied, what you held fixed, and the constraint its failure established - not only the verdict. The explanation attached to a dead end is a separate claim from the observation and can be wrong on its own, and a wrong one quietly forbids every later idea that shares the innocent variable.
 - **What you want back**: Concrete deliverable. A diagnosis? A design proposal? Multiple candidate solutions with tradeoffs? Pseudocode? A direct answer?
 - **Scope limits**: Read-only vs. write. Almost always read-only for a consult. Tell the subagent explicitly: "Do not edit files. Return your analysis as text."
 
 Subagents should reason independently. Do not tell them what other models are being asked or what answer is expected. Each one should form its view from the prompt alone.
+
+For a design or a stuck problem, as opposed to a lookup, give one panel member a different brief from the rest. Ask it to derive the requirement and invariant list independently from the source and from the product's own behaviour, then answer two questions: which stated requirement could move, and what is missing from this list? Tell it outright that breaking the question's frame is the most valuable thing it can return. The other members answer inside the frame as usual. Divergence between the frame-attacker and the rest is signal, not noise: a question can carry the losing assumption inside it, and a panel that all answers within one will agree its way into the wrong design.
 
 Deduplicate candidate options before dispatching. If two labeled options are functionally equivalent (e.g. "F = A"), collapse them. Redundant options waste panel attention and clutter the synthesis.
 
@@ -114,14 +130,27 @@ Then **ask the user** what they want next:
 - Run a follow-up consult with a refined prompt
 - Move on with your own synthesis
 
-### 6. Context Management
+### 6. The Falsification Round (design consults)
+
+A proposal that has not survived a kill attempt is a hypothesis, not a recommendation. Before adopting the panel's leading proposal, dispatch a fresh consult - fresh context, repo access - whose only brief is to kill it:
+
+- Name every consumer of every value the proposal changes, and show each one was checked. "Downstream reads were checked" is the sentence that hides the one that was not.
+- Hunt the invariant that breaks it, in the code and in the product's behaviour.
+- State in the prompt that a bare "looks good" is a failed consult. The value is in what it breaks.
+
+When a proposal dies, extract the invariant that killed it and add it to the prompt's constraint ledger. The kill is design input: the next round starts from the updated ledger rather than from scratch. Two or three rounds of propose, falsify, revise routinely beat any single answer, including one from a stronger model.
+
+The loop costs real tokens and wall time. Spend it where a wrong design ships expensively; a lookup does not need it.
+
+### 7. Context Management
 
 The subagent responses can be large. After synthesizing, do not re-quote the full raw responses in later turns. Refer back to specific points by model name and topic if the user asks follow-up questions. If a follow-up needs the full response, re-fetch by running a new targeted consult rather than dragging the original text forward.
 
-### 7. Spot-Check the Panel
+### 8. Spot-Check the Panel
 
 Models can make systematic errors, especially when the prompt subtly leads them. Before treating a convergent recommendation as truth:
 
 - If the panel cites specific code, line numbers, function names, or library APIs, verify at least one citation against the actual file or docs. Hallucinated specifics are the most common multi-model failure mode.
 - If all models agree on something surprising, ask: did the prompt frame the answer? Convergence on a leading question is noise, not signal.
 - Be willing to disagree with the panel in your synthesis if a citation doesn't check out or a constraint they missed makes their recommendation wrong.
+- Verifying a citation is the minimum. For a proposal you intend to build, the falsification round is the real check: agreement between models is not a test of the proposal, only of the frame they shared.
