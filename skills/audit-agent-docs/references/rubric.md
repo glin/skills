@@ -140,6 +140,9 @@ re-confirm the rule, not as text to delete.
 - Whether the phrasing is clear.
 - Whether an example is doing real work.
 - Whether the file is still true about the world.
+- Whether a field or convention the file defines still has a reader. Answering it needs
+  the artifact directory and the pattern the field writes, which vary per repository.
+  Step 3 of the procedure does it with two greps.
 
 The last one is the highest-value check in the whole audit and it is entirely a
 reading pass. Everything a skill asserts about a model name, a tool name, a path, or

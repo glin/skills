@@ -20,6 +20,7 @@ by the one doing the writing.
 2. **Never ask whether a rule is worth its tokens.** The model running the audit is
    often the model that wrote the rule, and it will say yes. Ask mechanical questions
    with an external anchor, and require evidence for *keeping* rather than for cutting.
+   Step 3 is the mechanical form of that for anything the file defines.
 3. **Run it cold.** A session that just added three rules should not judge them. Run
    at the start of a session, or from a subagent with no memory of the edits.
 4. **Propose, never auto-apply.** The output is a table the owner accepts or rejects
@@ -75,7 +76,40 @@ real findings come from:
 - **Does it contradict a sibling?** Two files covering adjacent ground must agree on
   the boundary and say so.
 
-### 3. Group and propose
+### 3. Count the readers before proposing a cut
+
+An instruction file defines things that leave traces elsewhere: a template field, an
+allowed status value, an ID scheme, a naming convention, a directory. Before a cut for
+any of those lands in the table, find out who reads it.
+
+```bash
+# who writes it, across the artifacts the file governs
+grep -rlE '^- <field>:' <artifact dir> | wc -l
+# who cites it, from outside that family
+git grep -n '<the token it produces>' -- ':!<artifact dir>'
+# who parses it
+git grep -n '<field>' -- '*.py' '*.mjs' '*.ts' '*.sh'
+```
+
+Three outcomes, hardest to cut first:
+
+- **A script or test parses it.** Cutting or rewording breaks a tool, and usually
+  silently, because a parser that matches nothing reports an empty result rather than
+  an error. Keep it, and add the check that fails when the two stop agreeing.
+- **Something outside the artifact family cites it.** It has a reader. Keep it.
+- **Only the artifacts themselves carry it.** It is a habit, not a contract. Now ask
+  whether another source already states the same fact. If one does, that is the cut,
+  and the duplicate is the thing to remove.
+
+Frequency decides nothing on its own. A field written into every artifact and read by
+nothing is the strongest cut in the file. One written rarely but cited from elsewhere
+is not a cut at all.
+
+When a cut is approved, existing artifacts keep the old shape. Say so in the file, and
+name the next edit of that artifact as the moment to normalise it. A sweep across
+settled records costs review churn and gains nothing.
+
+### 4. Group and propose
 
 Sort every candidate into cut, compress, move to a subdoc, replace with a pointer to
 an existing guard, or keep. Emit one table: section, current words, proposed words,
@@ -89,7 +123,7 @@ blocks, stale paths) from those needing the owner (what a rule should say, wheth
 example earns its place, which of two overlapping files owns a boundary). Apply the
 first set on approval; propose the second and wait.
 
-### 4. Re-measure
+### 5. Re-measure
 
 Report the delta against step 0. That number is the feedback the writing model never
 otherwise receives.
