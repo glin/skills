@@ -21,12 +21,12 @@ Read-only commands are fine: `git diff`, `git log`, `gh pr view`, `gh pr list`, 
 
 Distilled from how the user rewrites AI-drafted PR bodies:
 
-- Open with a short casual first-person lede ("Just putting this up because...", "Follow-ups from #X") and cross-links to related PRs, issues, or incidents ("Supersedes #X because...").
+- Open with the concrete reason for the PR. For support fixes, name the affected setup, observed failure, and corrected behavior. Preserve accurate customer terminology and exact configuration identifiers. Do not replace a specific report with abstract subsystem prose.
 - Drop sections that would be empty or `N/A` on lightweight PRs; keep the testing scaffolding on substantive ones.
 - Testing sections state only what was actually run and observed. Never present simulated or hypothetical runs as results. Leave a template checklist box unchecked rather than claiming an unrun step, annotating why (deferred to CI, not applicable).
 - Describe the final logical change, never the iteration journey. When branch history is iteration noise (approaches added then reverted), suggest squashing before opening so description and history match.
 - Cut rationale essays and bold feature-breakdown walls; keep repro steps, file:line references, and real links. Fluff dies, substance stays.
-- Apply the `rewrite` skill's Tier 1 banned vocabulary.
+- Apply the `rewrite` skill's Rewrite mode rules and its Tier 1 banned vocabulary.
 
 ## When to Use
 
@@ -74,6 +74,7 @@ Check, in parallel where possible:
 - Match the tone and length of recent merged PRs.
 - Reference issues only if found in commit messages or branch name (e.g., `Closes #123`). Do not invent issue numbers.
 - Do not include secrets, tokens, file contents from `.env`, or large diffs.
+- Treat user-provided issue, incident, or support wording as the source for the problem statement. Use the diff to describe the correction and tests, not to generalize the reported symptom.
 - Do not hard-wrap prose. Write each paragraph and bullet as a single line and let it soft-wrap; GitHub renders manual line breaks literally, so hard-wrapping produces ragged text. Only break lines where markdown requires it (list items, table rows, fenced/indented code blocks).
 
 ### 5. Update Mode (if requested)
