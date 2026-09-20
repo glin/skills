@@ -98,6 +98,21 @@ function stripCode(text) {
   return text.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
 }
 
+// Quoted material is what a document shows, not what it says. A skill whose
+// subject is writing has to quote the writing it forbids, so the rule that
+// defines a ban trips its own check when the quotation counts against it.
+// Code spans are already gone by the time this runs. What is left is the block
+// quote and the quoted phrase, the two ways prose carries a sentence it did not
+// write. A quoted phrase is held to one line so a stray quote mark cannot
+// swallow the rest of the file.
+function stripQuoted(text) {
+  return text
+    .split(/\r?\n/)
+    .filter((l) => !/^\s{0,3}>/.test(l))
+    .join("\n")
+    .replace(/"[^"\n]{0,200}"/g, " ");
+}
+
 function localLinks(text) {
   const out = new Set();
   for (const m of text.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
@@ -131,13 +146,18 @@ function normalise(s) {
 
 function auditSkill(dir) {
   const name = path.basename(dir);
-  const skillPath = path.join(dir, "SKILL.md");
+  let skillPath = path.join(dir, "SKILL.md");
   const t = `skill:${name}`;
 
   if (!fs.existsSync(skillPath)) {
     report("error", t, "missing-skill-md", `no SKILL.md in ${dir}`);
     return;
   }
+  // A skill is often installed as a symlink into the skills folder. A link like
+  // `../references/models.md` resolves from the directory the symlink points at,
+  // so measure from there rather than lexically from the link's location.
+  dir = fs.realpathSync(dir);
+  skillPath = path.join(dir, "SKILL.md");
   if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
     report("error", t, "directory-name", "directory name is not kebab-case");
   }
@@ -185,29 +205,51 @@ function auditSkill(dir) {
 
   // anti-patterns in the body
   const prose = stripCode(body);
-  const shouted = shoutedWords(prose);
+  // Shouting and a date are claims a document makes in its own voice, so both
+  // read past whatever it is only quoting.
+  const unquoted = stripQuoted(prose);
+  const shouted = shoutedWords(unquoted);
   if (shouted.length) {
     const counted = [...new Set(shouted)].map((w) => `${w}(${shouted.filter((x) => x === w).length})`);
     report("warn", t, "shouting", `${shouted.length} words capitalised for emphasis: ${counted.join(" ")}`);
   }
   for (const m of body.matchAll(/`([^`\n]*\\[^`\n]*)`/g)) {
     const span = m[1];
-    // Only skill-relative paths need forward slashes. Absolute Windows paths
-    // and shell variables are the correct form for a Windows-only skill, and
-    // a regex is not a path at all.
+    // Only skill-relative paths need forward slashes. An absolute Windows path
+    // belongs to machine-path, a shell variable is not a path yet, and a regex
+    // is not a path at all.
     if (/^[A-Za-z]:\\|\$env:|%[A-Z_]+%/.test(span)) continue;
     if (/\\[dwsbnrt.\-+*?()[\]{}|^$]/.test(span)) continue;
     if (/[A-Za-z0-9_.-]\\[A-Za-z0-9_.-]/.test(span))
       report("warn", t, "windows-path", `relative path uses backslashes: \`${span}\``);
   }
+  // A path that names one machine, one user or one install location fails on
+  // every other machine. A placeholder for the skill's own location leaves the
+  // reader to search the filesystem for it. The harness reports that location
+  // when it loads the skill, so a skill names its own files from there. A `..`
+  // from there follows a linked skill into its own repository.
+  const machinePaths = [
+    [/(?<![A-Za-z])[A-Za-z]:[\\/](?![^\s`'">|*?]*<)(?!(?:Windows|Program Files(?: \(x86\))?|ProgramData)(?:[\\/]|$))[^\s`'"<>|*?]+/gi, "an absolute drive path outside the system directories"],
+    [/(?<![\w.$}:])\/(?:Users|home)\/(?![<$])[^\s`'"\/]+/g, "a named user's home directory"],
+    [/(?<![\w$])(?:~|\$HOME|\$\{HOME\})\/(?![.<$])[A-Za-z][^\s`'"]*/g, "a folder inside a home directory"],
+    [/(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE)[\\/]\.(?:claude|codex|agents)[\\/]skills[\\/][\w-]+/g, "an install location for a skill"],
+    [/<(?:this (?:dir|directory)|this skill'?s (?:dir|directory)|skill[ _-]?dir(?:ectory)?|directory (?:containing|holding|of) this SKILL\.md)>/gi, "a placeholder for the skill's own location"],
+    [/\$\{?SKILL_DIR\}?[\\/]\.\.(?=[\\/`"'\s]|$)/g, "a parent of the skill directory, which a linked skill resolves inside its own repository"],
+  ];
+  for (const [pattern, what] of machinePaths) {
+    for (const m of body.matchAll(pattern)) report("error", t, "machine-path", `${what}: \`${m[0]}\``);
+  }
   for (const m of prose.matchAll(/\b(keep them identical|source of truth for the|bump .{0,20}quarterly|last reviewed)\b/gi)) {
     report("warn", t, "hand-maintained-sync", `"${m[0]}" makes currency depend on someone remembering`);
   }
-  const dated = [...prose.matchAll(/\b(as of|currently|recently|new in|since version|20\d\d-\d\d-\d\d|confirmed 20\d\d)\b/gi)];
+  const dated = [...unquoted.matchAll(/\b(as of|currently|recently|new in|since version|20\d\d-\d\d-\d\d|confirmed 20\d\d)\b/gi)];
   if (dated.length) report("info", t, "time-sensitive", `${dated.length} time-sensitive phrases: ${[...new Set(dated.map((x) => x[0]))].join(", ")}`);
 
-  if (fs.existsSync(path.join(dir, "README.md")))
-    report("warn", t, "readme-in-skill", "README.md inside the skill folder");
+  // A README beside SKILL.md is a second entry point, and a reader has no order
+  // between them. A README that SKILL.md names is an ordinary reference file one
+  // hop away, so the rule only fires on the unnamed kind.
+  if (fs.existsSync(path.join(dir, "README.md")) && !body.includes("README.md"))
+    report("warn", t, "readme-in-skill", "README.md inside the skill folder that SKILL.md never names");
 
   // progressive disclosure and reference depth
   const referenced = localLinks(body);
@@ -218,6 +260,9 @@ function auditSkill(dir) {
       continue;
     }
     if (!target.startsWith(path.resolve(dir))) continue;
+    // A link may name a directory, which the unreferenced-file check treats as
+    // pointing at everything in it. There is no body to measure.
+    if (fs.statSync(target).isDirectory()) continue;
     const sub = fs.readFileSync(target, "utf8");
     const subLines = sub.split(/\r?\n/).length;
     if (subLines > TOC_REQUIRED_OVER_LINES && !/^##\s*(contents|table of contents)/im.test(sub))

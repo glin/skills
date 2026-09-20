@@ -16,9 +16,7 @@
 - The `skill-creator` skill in `anthropics/skills`
 - Community reporting on CLAUDE.md sizing and progressive disclosure
 
-Where the sources disagree, the platform docs win, except on naming: the docs prefer
-gerund names (`processing-pdfs`), and also warn against inconsistent patterns inside
-one collection. A collection already built on verb-object names stays that way.
+Where the sources disagree, the platform docs win, except on naming: the docs prefer gerund names (`processing-pdfs`), and also warn against inconsistent patterns inside one collection. A collection already built on verb-object names stays that way.
 
 ## Skill rules: frontmatter
 
@@ -38,10 +36,7 @@ one collection. A collection already built on verb-object names stays that way.
 | `description` carries enough trigger terms | 80 chars | warn |
 | Frontmatter fields are recognised | `name`, `description`, `argument-hint`, `allowed-tools`, `disable-model-invocation`, `license`, `compatibility`, `metadata`, `model` | warn |
 
-The description is the only part loaded before the skill triggers, so it is the
-whole discovery surface. It should carry the words a user would actually type. An
-exclusion clause naming the neighbouring skill prevents the common failure where two
-skills both look right.
+The description is the only part loaded before the skill triggers, so it is the whole discovery surface. It should carry the words a user would actually type. An exclusion clause naming the neighbouring skill prevents the common failure where two skills both look right.
 
 ## Skill rules: body and structure
 
@@ -53,14 +48,11 @@ skills both look right.
 | Reference files stay one hop from SKILL.md | no onward links | warn |
 | Reference files carry a contents list | over 100 lines | warn |
 | Bundled files are named in SKILL.md | all | info |
-| No `README.md` inside the skill folder | none | warn |
+| No `README.md` that SKILL.md never names | none | warn |
 
-The 500-line limit is the documented performance threshold. Below it, splitting a
-file buys nothing and costs a hop. Above it, split by domain so an unrelated task
-never loads the wrong half.
+The 500-line limit is the documented performance threshold. Below it, splitting a file buys nothing and costs a hop. Above it, split by domain so an unrelated task never loads the wrong half.
 
-One hop matters because Claude previews rather than fully reads files reached
-through a chain, so a fact two hops out may be read partially or not at all.
+One hop matters because Claude previews rather than fully reads files reached through a chain, so a fact two hops out may be read partially or not at all.
 
 ## Skill rules: content
 
@@ -70,15 +62,14 @@ through a chain, so a fact two hops out may be read partially or not at all.
 | Currency depends on someone remembering | "keep them identical", "bump quarterly", "last reviewed" | warn |
 | Words capitalised for emphasis | capitalised word that also appears lower case in the same file | warn |
 | Relative paths use forward slashes | backslash in a non-absolute, non-variable path | warn |
+| No path tied to one machine, user or install | drive path outside system directories, named home directory, folder in a home directory, skill install location, placeholder for the skill's own location, `..` from the skill directory | error |
 | Time-sensitive phrasing | "as of", "currently", "recently", a bare date | info |
 
-Shouting is detected by comparing cases within one file. An acronym never appears in
-lower case, so it passes without an allowlist. The objection to capitals is not
-style: a bare imperative gives the model nothing to generalise from, so it cannot
-apply the rule to a case the skill did not spell out. State the rule, then why.
+Shouting is detected by comparing cases within one file. An acronym never appears in lower case, so it passes without an allowlist. The objection to capitals is not style: a bare imperative gives the model nothing to generalise from, so it cannot apply the rule to a case the skill did not spell out. State the rule, then why.
 
-A duplicated block is worse than a long one. Two copies means two places to update
-and one that gets forgotten, and the forgotten one keeps being read as current.
+A skill runs on machines its author never sees. A drive path, a named home directory, a folder in a home directory or a skill install location works on one of them. A skill names its own files from the directory that holds its SKILL.md, which the harness reports when it loads the skill. A placeholder for that directory leaves the reader to search the filesystem for it. A `..` from that directory follows a linked skill into its own repository, where its siblings are missing. A skill names a sibling from the skills directory, which is the skill directory with its last path component removed.
+
+A duplicated block is worse than a long one. Two copies means two places to update and one that gets forgotten, and the forgotten one keeps being read as current.
 
 ## CLAUDE.md rules
 
@@ -94,44 +85,19 @@ and one that gets forgotten, and the forgotten one keeps being read as current.
 | Per-section size and share | reported, not gated | stat |
 | Size and instruction count | reported, not gated | stat |
 
-The stale-reference and guard checks need `--root`. Both follow junctions and
-symlinks, since a linked-in package is a common home for referenced docs, and both
-skip whatever the repo's own ignore rules exclude, so build output and caches never
-reach the index. A reference counts as present if it resolves as written, resolves
-relative to the instruction file, or matches a file anywhere in the repo by name, so
-a filename cited without its directory is not reported. Only tokens ending in a
-trailing slash or in a file extension are considered, either a common extension or
-one the repo itself uses, which keeps property accesses and dotted identifiers out
-of the results.
+The stale-reference and guard checks need `--root`. Both follow junctions and symlinks, since a linked-in package is a common home for referenced docs, and both skip whatever the repo's own ignore rules exclude, so build output and caches never reach the index. A reference counts as present if it resolves as written, resolves relative to the instruction file, or matches a file anywhere in the repo by name, so a filename cited without its directory is not reported. Only tokens ending in a trailing slash or in a file extension are considered, either a common extension or one the repo itself uses, which keeps property accesses and dotted identifiers out of the results.
 
-The guard check is the highest-value mechanical check because acting on it needs no
-taste: if a rule names a validator or test the build already runs, the rule can be
-one line pointing at it. It reports at info because a name match is not proof the
-prose is redundant, only that it is worth reading for redundancy.
+The guard check is the highest-value mechanical check because acting on it needs no taste: if a rule names a validator or test the build already runs, the rule can be one line pointing at it. It reports at info because a name match is not proof the prose is redundant, only that it is worth reading for redundancy.
 
-Per-section share is what step 0 of the procedure runs on. It exists because audit
-attention lands on whatever is top of mind rather than on whatever is large, and the
-two are rarely the same file region.
+Per-section share is what step 0 of the procedure runs on. It exists because audit attention lands on whatever is top of mind rather than on whatever is large, and the two are rarely the same file region.
 
-Size is reported rather than gated because word count cannot tell a valuable rule
-from a wasteful one. It stays in the report because it is the feedback the writer
-never gets: a bloated file arrives pre-loaded and is never blamed for the slowness
-or the miss it causes.
+Size is reported rather than gated because word count cannot tell a valuable rule from a wasteful one. It stays in the report because it is the feedback the writer never gets: a bloated file arrives pre-loaded and is never blamed for the slowness or the miss it causes.
 
-The instruction count is the number to watch. Models follow on the order of 150 to
-200 instructions reliably, and the harness system prompt already spends part of that
-budget, so a file with 190 bullets and paragraphs is at the ceiling before the user
-has said anything.
+The instruction count is the number to watch. Models follow on the order of 150 to 200 instructions reliably, and the harness system prompt already spends part of that budget, so a file with 190 bullets and paragraphs is at the ceiling before the user has said anything.
 
-A pointer is the fix, not the defect. `See docs/x.md` replacing a story is
-progressive disclosure working. The defect is the story plus the pointer, which pays
-for the evidence twice. That is why the rule keys on length rather than on the
-presence of a path.
+A pointer is the fix, not the defect. `See docs/x.md` replacing a story is progressive disclosure working. The defect is the story plus the pointer, which pays for the evidence twice. That is why the rule keys on length rather than on the presence of a path.
 
-Dated provenance reports at info rather than warn. A date on a rule about external
-behaviour is a claim about when that behaviour was last checked, which is worth
-having in a file that is deliberately a ledger. Treat each one as a prompt to
-re-confirm the rule, not as text to delete.
+Dated provenance reports at info rather than warn. A date on a rule about external behaviour is a claim about when that behaviour was last checked, which is worth having in a file that is deliberately a ledger. Treat each one as a prompt to re-confirm the rule, not as text to delete.
 
 ## What the script deliberately does not check
 
@@ -140,11 +106,6 @@ re-confirm the rule, not as text to delete.
 - Whether the phrasing is clear.
 - Whether an example is doing real work.
 - Whether the file is still true about the world.
-- Whether a field or convention the file defines still has a reader. Answering it needs
-  the artifact directory and the pattern the field writes, which vary per repository.
-  Step 3 of the procedure does it with two greps.
+- Whether a field or convention the file defines still has a reader. Answering it needs the artifact directory and the pattern the field writes, which vary per repository. Step 3 of the procedure does it with two greps.
 
-The last one is the highest-value check in the whole audit and it is entirely a
-reading pass. Everything a skill asserts about a model name, a tool name, a path, or
-a harness behaviour should be confirmed against the current state before the audit
-closes.
+The last one is the highest-value check in the whole audit and it is entirely a reading pass. Everything a skill asserts about a model name, a tool name, a path, or a harness behaviour should be confirmed against the current state before the audit closes.
