@@ -13,7 +13,7 @@ allowed-tools: Bash(bash:*), Bash(gh:*), Bash(curl:*), Bash(jq:*), Bash(file:*)
 - videos render as an inline player: a bare `https://github.com/user-attachments/assets/...` URL
 - other files (PDF, zip, log) render as a download link: `[name](url)`
 
-The script is `gh-attach.sh` in this skill's directory.
+The script is `gh-attach.sh` in this skill's directory, written `$SKILL_DIR` below. The harness gives that location when it loads the skill. Never search the filesystem for it.
 
 ## Prerequisites
 
@@ -25,8 +25,7 @@ The script is `gh-attach.sh` in this skill's directory.
 It is a browser session cookie. Read it once:
 
 - **Chrome/Edge/Brave**: open a logged-in github.com page, DevTools (F12) → Application → Storage → Cookies → `https://github.com` → copy the `user_session` value.
-- **Firefox**: it is stored in plaintext, so `gh-attach.sh --firefox` can read it directly, or:
-  `sqlite3 ~/.mozilla/firefox/<profile>/cookies.sqlite "SELECT value FROM moz_cookies WHERE name='user_session' AND host LIKE '%github.com'"`
+- **Firefox**: it is stored in plaintext, so `gh-attach.sh --firefox` can read it directly, or: `sqlite3 ~/.mozilla/firefox/<profile>/cookies.sqlite "SELECT value FROM moz_cookies WHERE name='user_session' AND host LIKE '%github.com'"`
 
 ### Where to keep it
 
@@ -42,17 +41,17 @@ Alternatives: export `GH_SESSION_TOKEN` (convenient, but plaintext in whatever c
 
 ## Usage
 
-The script lives at `~/.claude/skills/gh-attach/gh-attach.sh`. For convenience you can symlink it onto your PATH (`ln -s ~/.claude/skills/gh-attach/gh-attach.sh ~/bin/gh-attach`).
+To call it by name, link `$SKILL_DIR/gh-attach.sh` into a directory on your `PATH`.
 
 ```bash
 # Infers the repo from the current git workspace
-GH_SESSION_TOKEN=... bash ~/.claude/skills/gh-attach/gh-attach.sh screenshot.png
+GH_SESSION_TOKEN=... bash "$SKILL_DIR/gh-attach.sh" screenshot.png
 
 # Multiple files, explicit repo
-bash ~/.claude/skills/gh-attach/gh-attach.sh shot1.png demo.webm report.pdf --repo owner/repo
+bash "$SKILL_DIR/gh-attach.sh" shot1.png demo.webm report.pdf --repo owner/repo
 
 # Firefox convenience (reads the cookie for you)
-bash ~/.claude/skills/gh-attach/gh-attach.sh --firefox screenshot.png
+bash "$SKILL_DIR/gh-attach.sh" --firefox screenshot.png
 ```
 
 Each successful upload prints one paste-ready line on stdout. Pipe it straight into a body:
@@ -60,7 +59,7 @@ Each successful upload prints one paste-ready line on stdout. Pipe it straight i
 ```bash
 gh issue create --title "Repro" --body "Steps:
 
-$(bash ~/.claude/skills/gh-attach/gh-attach.sh bug.png)
+$(bash "$SKILL_DIR/gh-attach.sh" bug.png)
 "
 ```
 
