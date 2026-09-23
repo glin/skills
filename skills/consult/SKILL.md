@@ -1,7 +1,7 @@
 ---
 name: consult
 description: "Hand off a hard problem to multiple independent agents using different models in parallel, synthesize their answers, and run a falsification round on any design proposal before it is built. Use when: stuck on a hard problem, no obvious solution, want multi-model perspectives, consult panel, brainstorm with models, second opinion on tricky design, want a proposal attacked before committing to it. Saves context tokens by running consultations in isolated subagents."
-argument-hint: "[models...] e.g. 'opus gpt gemini' or blank for current model + sonnet"
+argument-hint: "[models...] e.g. 'opus sol gemini' or blank for current model + sonnet"
 ---
 
 # Multi-Agent Consult
@@ -32,15 +32,15 @@ Before launching subagents, make sure the problem statement is self-contained. E
 
 If the user's request is vague (e.g. "ask the models what they think"), restate the problem in your own words and confirm with the user before dispatching. A bad prompt to four models wastes four times the tokens.
 
+A measured claim in the brief carries the two measurements behind it. A brief that says a prediction was falsified must give the predicted value, the observed value, and the timestamps of both. Every model reasons from that claim, so a wrong one buys the same wrong answer as many times as there are panel members, and the error hides in the agreement between them.
+
 For non-trivial consults, specifically confirm with the user: (a) the candidate option set you intend to send (labels and brief descriptions), (b) any options to rule out upfront so the panel doesn't waste cycles on them, (c) which models to query. A 10-second confirm avoids re-running 3 subagents.
 
 ### 2. Parse Model Arguments
 
 The user may specify models in the argument. Parse the argument to identify requested models:
 
-The shorthands, and how to pass a model to `runSubagent`, are in
-[../references/models.md](../references/models.md). Read it rather than assuming a
-version; `pre-commit-review` shares that file, so neither skill carries its own copy.
+The shorthands, and how to pass a model to `runSubagent`, are in [../references/models.md](../references/models.md). Read it rather than assuming a version; `pre-commit-review` shares that file, so neither skill carries its own copy.
 
 If multiple models are specified, run one subagent per model **in parallel** in a single tool-call block.
 
@@ -48,21 +48,16 @@ If no models are specified, use the blank-argument default from that table. If t
 
 ### Dispatch route: OpenAI models via the codex CLI (shell)
 
-Where `runSubagent` cannot target an OpenAI model (e.g. Claude Code), dispatch GPT through the
-codex CLI as a shell task: `codex exec --sandbox read-only "<self-contained prompt>"` (uses the
-CLI's configured default model, currently GPT-5.6 Sol; override with `-c model=...`). Gotchas,
-each learned from a real run:
+Where `runSubagent` cannot target an OpenAI model (e.g. Claude Code), dispatch GPT through the codex CLI as a shell task: `codex exec --sandbox read-only "<self-contained prompt>"`. It uses whatever model `$CODEX_HOME/config.toml` (by default `~/.codex/config.toml`) sets as the default, so read that file rather than assuming a variant. Override per run with `-c model=...`. Record the variant you actually got wherever model evidence is kept, because the configured default moves. Gotchas, each learned from a real run:
 
-- A deep run outlives a 10-minute foreground shell timeout. Run it in the background and read
-  the output file on completion.
-- Do not pipe large diffs or files through stdin. The read-only sandbox lets codex read the
-  repo itself: name a commit hash or file paths and let it run its own git and reads - it also
-  finds surrounding context stdin would have hidden.
-- Output is a session transcript with the answer at the tail. Demand a strict deliverable
-  format in the prompt ("ranked findings, file:line, concrete failure scenario") so the tail
-  is directly usable without parsing the transcript.
-- Calibration: one deep code review is roughly 200k tokens and 25 minutes. Right for a
-  risky-feature gate or a genuinely hard design question; wrong for routine checks.
+- A deep run outlives a 10-minute foreground shell timeout. Run it in the background and read the output file on completion.
+- Do not pipe large diffs or files through stdin. The read-only sandbox lets codex read the repo itself: name a commit hash or file paths and let it run its own git and reads - it also finds surrounding context stdin would have hidden.
+- From a background or non-interactive shell, close stdin explicitly (`< /dev/null`). With stdin open, `codex exec` prints "Reading additional input from stdin..." and blocks until EOF, which in a background shell never arrives.
+- Output is a session transcript with the answer at the tail. Demand a strict deliverable format in the prompt ("ranked findings, file:line, concrete failure scenario") so the tail is directly usable without parsing the transcript.
+- Keep skill trigger phrases out of the prompt. Codex loads skills from the same directory and matches them on their description line. A prompt that opened "this is a pre-commit review" made it `cat` that skill file. It then spent the whole turn following the instructions for dispatching a review instead of doing one. Say what you want done. Never say what the job is called. Add a line telling it to load no skill file.
+- Check the output, never the exit code. A run that did no work still exits 0. Confirm that the tail holds the deliverable you asked for before you read anything into it.
+- Background it once, not twice. A trailing `&` inside a harness call that already backgrounds the command detaches the run. The harness then reports the job complete while codex is still writing. Let the harness own the job, or wait on a marker the run writes itself (`; echo "EXIT:$?" >> out`).
+- Calibration: one deep code review is roughly 200k tokens and 25 minutes. Right for a risky-feature gate or a genuinely hard design question; wrong for routine checks.
 
 ### 3. Construct the Consult Prompt
 
