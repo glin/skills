@@ -61,13 +61,12 @@ function patternsFrom(mdPath) {
 // A config is optional. Without one this scans every tracked source file in the repo under the generic
 // rules, which is the right default for a project that has no house vocabulary to declare. A config only
 // ever narrows or adds: which trees ship, which words are the domain's own, which extra rules apply.
-const configPath = resolve(arg('--config', join(process.cwd(), '.claude', 'deslop.config.mjs')));
-const fileCfg = existsSync(configPath) ? (await import(pathToFileURL(configPath).href)).default : null;
-const repoRoot = resolve(arg('--root', fileCfg ? dirname(dirname(configPath)) : process.cwd()));
+const explicitConfig = arg('--config', null);
+const repoRoot = resolve(arg('--root', process.cwd()));
 
 // A project can declare its scope in the CLAUDE.md it already keeps, in a fenced json deslop-scope
-// block. That suits a repository which does not vendor this skill and has no reason to carry a config
-// file for it. The block takes the same keys a config does, minus `rules` and `annex`, which are code.
+// block. That suits a repository which vendors this skill and has a CLAUDE.md of its own to carry the
+// block in. The block takes the same keys a config does, minus `rules` and `annex`, which are code.
 // A config file wins when both exist.
 function scopeFrom(mdPath) {
   if (!existsSync(mdPath)) return {};
@@ -81,7 +80,48 @@ function scopeFrom(mdPath) {
   }
 }
 
-const cfg = fileCfg || scopeFrom(join(repoRoot, 'CLAUDE.md'));
+// A repository that does not vendor this skill has no config file and no reason to add a deslop-scope
+// block to a CLAUDE.md that other readers will see. For that case the recommended place is a private
+// scope beside the clone's own git data: `<git common dir>/info/deslop-scope.json`. `--git-common-dir`
+// resolves to the main clone's `.git` even when the scan runs from a linked worktree, whose own `.git`
+// is only a pointer file. Nothing ever tracks that path, so it holds a repository's settings without
+// writing them into a repository someone else will read. It takes the same keys as the CLAUDE.md block,
+// and it is the first source checked: a private scope answers before either committed source is read.
+function gitCommonDir(cwd) {
+  const result = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd, encoding: 'utf8' });
+  if (result.status !== 0) return null;
+  return resolve(cwd, result.stdout.trim());
+}
+
+function privateScope(cwd) {
+  const commonDir = gitCommonDir(cwd);
+  if (!commonDir) return null;
+  const scopePath = join(commonDir, 'info', 'deslop-scope.json');
+  if (!existsSync(scopePath)) return null;
+  try {
+    return JSON.parse(readFileSync(scopePath, 'utf8').replace(/^﻿/, ''));
+  } catch (e) {
+    console.error(`${scopePath}: the deslop-scope file is not valid JSON -- ${e.message}`);
+    process.exit(2);
+  }
+}
+
+// An explicit --config wins over everything else, including a private scope. Without one, the private
+// scope answers first; the committed .claude/deslop.config.mjs is only imported when no private scope
+// was found, so a broken committed config never stops a scan that a private scope would have answered.
+async function loadConfig() {
+  if (explicitConfig) {
+    const configPath = resolve(explicitConfig);
+    return existsSync(configPath) ? (await import(pathToFileURL(configPath).href)).default : {};
+  }
+  const priv = privateScope(repoRoot);
+  if (priv) return priv;
+  const defaultConfigPath = join(repoRoot, '.claude', 'deslop.config.mjs');
+  if (existsSync(defaultConfigPath)) return (await import(pathToFileURL(defaultConfigPath).href)).default;
+  return scopeFrom(join(repoRoot, 'CLAUDE.md'));
+}
+
+const cfg = await loadConfig();
 
 const skill = patternsFrom(join(HERE, 'SKILL.md'));
 const annexes = (cfg.annex || []).map(p => patternsFrom(resolve(repoRoot, p)));
