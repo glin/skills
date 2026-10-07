@@ -2,6 +2,14 @@
 
 Use this rubric to direct inspection. Report only findings supported by repository evidence.
 
+## Contents
+
+- Priority
+- Audit lanes: verification integrity, development tooling, state, input, and recovery, architecture and ownership, duplication and drift, parallel agent work, test suite, instructions and documentation, team discoverability
+- Evidence format
+- Planning checks
+- Promotion pass
+
 ## Priority
 
 | Priority | Meaning |
@@ -139,6 +147,23 @@ Check:
 - Whether public setup and support claims match current code and CI.
 
 Keep root instructions focused on routing, safety, and workflow facts every session needs. Put subsystem behavior in subject docs. Add a nested instruction file only for unique path-specific constraints, and point to canonical docs rather than copying them.
+
+### Team discoverability
+
+This lane tests whether the docs answer real tasks. The Instructions and documentation lane tests whether they are current and free of duplicates. When delegation is authorized, give a fresh reviewer with no history of the work a list of real tasks. Otherwise answer from the repository alone, and mark the answers as informed by the author. The reviewer answers each task from the repository alone: yes, partly, or no. It cites the file and line, and names what is missing. It must not fill a gap from general knowledge.
+
+Build the task list from the repository's purpose. A typical list:
+
+- Say what the repository is for, and who uses it.
+- Set it up, or adopt it in a new consumer, end to end.
+- Decide whether a new piece belongs here or in another repository.
+- Make the most common change, such as a model, dependency, or version bump, and find every place it touches.
+- Test a change before it reaches users or consumers.
+- Debug the most common failure.
+- Find who to ask about the repository.
+- Have an AI agent do each task: check for an agent instructions file, and whether an agent in a consuming repository finds its way here.
+
+Then list the facts a teammate needs that live outside the repository. Examples are one person's notes, a chat, a plan, or settings. Give each gap a priority from P0 to P3 by its failure mode. A fix that adds ownership, settings, or process is a proposal for the owner, not a defect to correct.
 
 ## Evidence format
 

@@ -1,6 +1,6 @@
 ---
 name: agent-ready-repo-audit
-description: "Audit a software repository for correctness risks, maintainability, test-suite health, drift, and safe parallel agent work, then produce evidence-backed priorities and a phased plan. Use when: full codebase audit, agent-readiness audit, maintainability audit, duplication or drift review, test-suite bloat, or modularity planning. Do not use for reviewing only the current diff or implementing a known change."
+description: "Audit a software repository for correctness risks, maintainability, test-suite health, drift, and safe parallel agent work, then produce evidence-backed priorities and a phased plan. Use when: full codebase audit, agent-readiness audit, maintainability audit, duplication or drift review, test-suite bloat, modularity planning, or a team discoverability or onboarding review (can a new teammate or agent find and maintain this repository). Do not use for reviewing only the current diff or implementing a known change."
 ---
 
 # Agent-ready repository audit
@@ -9,7 +9,7 @@ Produce a measured audit and an implementation order. The goal is safer change, 
 
 ## Boundaries
 
-- Treat the audit as read-only unless the user also asks for implementation.
+- Treat the audit as read-only unless the author also asks for implementation.
 - Read the repository's instructions, design goals, and architecture before judging structure. Evaluate proposals against the product's requirements.
 - Preserve unrelated working-tree changes. Record the starting commit and status.
 - Do not use file length, test count, directory depth, or abstraction count as quality targets. Use them to locate ownership and conflict hotspots.
@@ -77,7 +77,7 @@ Write the plan where the repository expects plans. Include exit criteria, verifi
 
 ### 6. Prototype only definite improvements
 
-If the user asks for implementation, choose a low-risk change whose effect can be measured and whose coverage can remain intact. Use an isolated worktree when requested or when the main checkout contains concurrent work. Record before and after results. Do not merge or publish unless the user explicitly asks.
+If the author asks for implementation, choose a low-risk change whose effect can be measured and whose coverage can remain intact. Use an isolated worktree when requested or when the main checkout contains concurrent work. Record before and after results. Do not merge or publish unless the author explicitly asks.
 
 Optimization must preserve the boundary being tested. Reuse expensive infrastructure when fresh per-test state still provides isolation. Add fast and full lanes rather than weakening the default gate. Remove tests only with a coverage map that proves equivalent behavior remains.
 
