@@ -58,7 +58,7 @@ EOF
 
 ## Traps
 
-- A message the user sends mid-turn is not a `user` record. It arrives as `type: attachment` with `attachment.type: queued_command`, and its text sits in `attachment.prompt`. A turn lister that reads only `user` records drops it silently.
+- A message the author sends mid-turn is not a `user` record. It arrives as `type: attachment` with `attachment.type: queued_command`, and its text sits in `attachment.prompt`. A turn lister that reads only `user` records drops it silently.
 - A `user` record is not always a user turn. Slash commands, their output, and injected context all arrive as `user`. Drop `isMeta`, drop `isSidechain`, and drop the tags in the snippet above.
 - Other record types share the file: `queue-operation`, `attachment`, `atis-latch`, `last-prompt`, `ai-title`, `mode`, `system`.
 - Every Claude record carries `cwd` and `sessionId`. Read them to confirm the file, because two working directories can produce one directory slug.

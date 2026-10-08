@@ -11,10 +11,10 @@ This is a checklist, not ceremony. Do the steps that apply, skip the ones that d
 
 ## Hard rules
 
-- Read-only toward the outside world. Do not post to GitHub, send messages, or run any mutating command as part of prep. Persisting is to local files (and reporting what already exists on GitHub), never new posts. This respects the user's standing "never post unless explicitly told" rule.
+- Read-only toward the outside world. Do not post to GitHub, send messages, or run any mutating command as part of prep. Persisting is to local files (and reporting what already exists on GitHub), never new posts. This respects the author's standing "never post unless explicitly told" rule.
 - Persist to the right place: a checked-in project doc for findings, not ephemeral memory and not the scratchpad (scratchpad is wiped; memory is for cross-session user/project facts, not this session's investigation results). If a project doc already tracks this work, append to it rather than starting a new file.
 - Do not summarize away specifics. Keep exact numbers, IDs, paths, commit SHAs, and verified command output. The whole point is that the summary will already do the lossy version.
-- Do not start new investigation. Prep captures what is known; it does not go find more. If the user deferred something ("investigate further after compaction"), record it as an open thread and stop.
+- Do not start new investigation. Prep captures what is known; it does not go find more. If the author deferred something ("investigate further after compaction"), record it as an open thread and stop.
 
 ## Procedure
 
@@ -24,7 +24,7 @@ Scan the session for anything that exists only in the chat, not yet on disk or G
 
 - Findings and conclusions from investigation (root causes, verified chains, quantifications).
 - Decisions made and the reasoning behind them.
-- Open threads: unfinished decisions, deferred investigations, things waiting on the user.
+- Open threads: unfinished decisions, deferred investigations, things waiting on the author.
 - Drafted-but-unposted artifacts (comments, issue bodies, PR text sitting in scratchpad).
 - Exact identifiers: PR/issue numbers, workflow run IDs, commit SHAs, file:line references, S3 keys, timestamps, test results.
 
@@ -40,11 +40,11 @@ At the end of the durable doc, add a short "State for resuming" subsection so th
 
 - Every live artifact with its identifier: PR #N at commit SHA, issue #N and its status, file paths, drafted-comment paths.
 - The open decisions and deferred work, each in one line.
-- Anything the user explicitly asked to do next or defer.
+- Anything the author explicitly asked to do next or defer.
 
 ### 4. Report and stop
 
-Tell the user, in a few lines: what you persisted and where, the live artifacts and their state, and the open threads. Then say prep is done and they can compact. Do not begin any deferred work.
+Tell the author, in a few lines: what you persisted and where, the live artifacts and their state, and the open threads. Then say prep is done and they can compact. Do not begin any deferred work.
 
 ## Relationship to other skills
 

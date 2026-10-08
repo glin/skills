@@ -23,7 +23,7 @@ The tags go in before execution starts, so a session picking up a phase knows it
 
 - A phase runs in a fresh or freshly compacted session. Never compact mid-phase. The plan file, the project's conventions doc, and agent memory are the only handoff medium.
 - A phase ends handoff-complete: checkboxes ticked, results recorded INLINE in the plan (findings, verification numbers, surprises the next phase needs), and committed. A fresh session must be able to start the next phase from the plan alone.
-- Only the human can compact or open a session, so the end-of-phase report states exactly what to do next ("compact now, then say 'start phase N'").
+- Only the author can compact or open a session, so the end-of-phase report states exactly what to do next ("compact now, then say 'start phase N'").
 - Do not split the plan into per-phase files. Phases share decisions and taxonomies, and a split invites drift the moment one phase revises a shared decision. Delegate prompts quote the relevant plan sections verbatim instead.
 
 ## Write the phase's gate into the plan, and predict its numbers

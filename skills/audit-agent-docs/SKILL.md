@@ -50,7 +50,7 @@ The script matches shapes. These need a reader, and this step is where most of t
 - **For each rule, name the concrete failure that would happen without it.** No nameable failure means flag it. This is the keeping-evidence test from principle 2.
 - **Is the example carrying the rule, or is it the incident that prompted the edit?** The rule states the general class. The incident belongs in a test or a linked doc.
 - **Would a tool enforce this better?** A rule a linter, type, test, or assertion can check should be that instead. Prose only hopes someone reads it.
-- **Does the description trigger?** Read it as the only thing a fresh session sees. Would it fire on the words the user types, and stay quiet on a neighbour's work?
+- **Does the description trigger?** Read it as the only thing a fresh session sees. Would it fire on the words the author types, and stay quiet on a neighbour's work?
 - **Does it contradict a sibling?** Two files covering adjacent ground must agree on the boundary and say so.
 
 ### 3. Count the readers before proposing a cut

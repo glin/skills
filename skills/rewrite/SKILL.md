@@ -10,7 +10,7 @@ Turn word soup into text a human reads once and understands. Pick the mode first
 
 ## Mode detection
 
-- **Explain mode**: the user is the reader, trying to understand what some text actually says (an RFD, PR description, review comment, agent response). Output an explanation in chat.
+- **Explain mode**: the author is the reader, trying to understand what some text actually says (an RFD, PR description, review comment, agent response). Output an explanation in chat.
 - **Rewrite mode**: the result will be posted somewhere (PR body, issue, GitHub or Slack comment, docs, NEWS, commit message). Output raw paste-ready markdown.
 
 Cues: "explain", "what does this mean", "what is this saying" mean explain mode. "rewrite", "make this more concise", "raw markdown", or naming a destination mean rewrite mode. If the destination is unknown and it changes the format, ask one question, then proceed.
@@ -31,7 +31,7 @@ Pasted text, a file path, "your last response" (pull it from the conversation), 
 
 Output the rewritten text in a fenced `markdown` block, then one line on what was cut. Match format to destination: bullets for Slack and GitHub comments, short prose for NEWS and docs, the repo's template scaffolding for PR bodies.
 
-Rules, distilled from the user's own edits of AI-drafted text:
+Rules, distilled from the author's own edits of AI-drafted text:
 
 - Lead with the point. For support fixes, name the affected setup and observed failure before the implementation. Preserve accurate customer terminology and exact identifiers. Use first person only when the source or repository convention calls for it.
 - Cut what carries no information: rationale essays, empty or N/A template sections, bold feature-breakdown walls, hedging asides ("Happy to link an issue if preferred"), references to untracked planning docs, proposed-fix sections in issues (issues stay problem-focused).
@@ -45,6 +45,8 @@ Rules, distilled from the user's own edits of AI-drafted text:
 ## Reference docs
 
 A README, module doc, or runbook needs a further pass: most of what bloats one is accurate and well written, so the rules above leave it alone.
+
+Before restructuring a substantial guide, identify each section's job: teach by doing, give steps, support lookup, or explain decisions. Separate those jobs only when mixing them makes the guide harder to use. This check does not change the format of code comments, issues, PR descriptions, or short messages.
 
 Work section by section. The answers need facts about the code, so go find them rather than guessing.
 

@@ -12,7 +12,7 @@ Review the current conversation and suggest updates to project documentation bas
 - After a long coding session with iterations
 - After discovering project conventions or gotchas
 - After debugging something that took multiple attempts
-- When the user asks "any changes to CLAUDE.md / README?"
+- When the author asks "any changes to CLAUDE.md / README?"
 
 ## Procedure
 
@@ -52,4 +52,4 @@ Suggestions can target doc files or inline code comments. For inline comments, s
 
 ### 4. Apply on Approval
 
-Wait for the user to approve specific suggestions or all of them. Apply only what they approve.
+Wait for the author to approve specific suggestions or all of them. Apply only what they approve.

@@ -36,7 +36,7 @@ Where the sources disagree, the platform docs win, except on naming: the docs pr
 | `description` carries enough trigger terms | 80 chars | warn |
 | Frontmatter fields are recognised | `name`, `description`, `argument-hint`, `allowed-tools`, `disable-model-invocation`, `license`, `compatibility`, `metadata`, `model` | warn |
 
-The description is the only part loaded before the skill triggers, so it is the whole discovery surface. It should carry the words a user would actually type. An exclusion clause naming the neighbouring skill prevents the common failure where two skills both look right.
+The description is the only part loaded before the skill triggers, so it is the whole discovery surface. It should carry the words the author would actually type. An exclusion clause naming the neighbouring skill prevents the common failure where two skills both look right.
 
 ## Skill rules: body and structure
 
@@ -93,7 +93,7 @@ Per-section share is what step 0 of the procedure runs on. It exists because aud
 
 Size is reported rather than gated because word count cannot tell a valuable rule from a wasteful one. It stays in the report because it is the feedback the writer never gets: a bloated file arrives pre-loaded and is never blamed for the slowness or the miss it causes.
 
-The instruction count is the number to watch. Models follow on the order of 150 to 200 instructions reliably, and the harness system prompt already spends part of that budget, so a file with 190 bullets and paragraphs is at the ceiling before the user has said anything.
+The instruction count is the number to watch. Models follow on the order of 150 to 200 instructions reliably, and the harness system prompt already spends part of that budget, so a file with 190 bullets and paragraphs is at the ceiling before the author has said anything.
 
 A pointer is the fix, not the defect. `See docs/x.md` replacing a story is progressive disclosure working. The defect is the story plus the pointer, which pays for the evidence twice. That is why the rule keys on length rather than on the presence of a path.
 
