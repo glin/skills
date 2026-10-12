@@ -17,6 +17,7 @@
 set -euo pipefail
 
 skill_dir="$(cd "$(dirname "$0")" && pwd)"
+original_args=("$@")
 runner=claude; prompt=""; model=""; effort=""; name=""; cwd="$PWD"; worktree=0; attach=0; owned=0; log=""; read_only=0; full_access=0
 notify_thread=""
 permmode=""
@@ -54,6 +55,9 @@ done
 if [ "$attach" = 1 ]; then owned=1; fi
 if [ -z "$prompt" ] || [ ! -f "$prompt" ]; then echo "--prompt FILE is required and must exist" >&2; exit 2; fi
 case "$runner" in claude|codex) ;; *) echo "--runner must be claude or codex" >&2; exit 2 ;; esac
+if [ "$runner" = claude ] && [ "$model" = haiku ]; then
+  model=claude-haiku-5-5
+fi
 # The Codex CLI takes a full model id. A shorthand from the references skill reaches it as
 # a literal and the request fails with a 400. Resolve the OpenAI shorthands here.
 if [ "$runner" = codex ]; then
@@ -64,7 +68,7 @@ if [ "$runner" = codex ]; then
     bedrock=1
   fi
   case "$model" in
-    sol) model=gpt-6-sol ;;
+    sol) model=gpt-6.1-sol ;;
     sol6) model=gpt-6-sol ;;
     terra) model=gpt-5.6-terra ;;
     luna) model=gpt-6-luna ;;
@@ -96,8 +100,23 @@ if [ "${#read_tools[@]}" -gt 0 ] && { [ "$runner" != claude ] || [ "$read_only" 
   exit 2
 fi
 if [ "$runner" = claude ] && [ "$read_only" = 1 ] && [ -n "$permmode" ]; then
-  echo "--permission-mode cannot override Claude --read-only; it uses dontAsk with no permission prompts" >&2
+  echo "--permission-mode cannot override Claude --read-only; it sets its own permission mode with no permission prompts" >&2
   exit 2
+fi
+# Share Arc delivery classification with the Python launcher. Exit 3 means no accepted launch.
+if [ "$owned" = 1 ] && [ "$read_only" = 0 ]; then
+  if python3 -c 'import sys; assert sys.version_info >= (3,10)' >/dev/null 2>&1; then
+    dispatch_cli_bash="$(command -v bash)"
+    case "$(uname -s)" in
+      MINGW*|MSYS*|CYGWIN*) dispatch_cli_bash="$(cygpath -w "$dispatch_cli_bash")" ;;
+    esac
+    export DISPATCH_CLI_BASH="$dispatch_cli_bash"
+    arc_status=0
+    python3 "$skill_dir/dispatch.py" --internal-arc-only "${original_args[@]}" || arc_status=$?
+    if [ "$arc_status" != 3 ]; then exit "$arc_status"; fi
+  elif command -v "${ARC_BIN:-arc}" >/dev/null 2>&1; then
+    echo "Arc route refused before acceptance: Python 3.10 is unavailable. Using the requested CLI transport." >&2
+  fi
 fi
 # Both launchers print an Arc receipt by default now, with or without --arc-dispatch, and
 # building that receipt line takes python3. Without it, the launch still runs, only without
@@ -111,6 +130,20 @@ if [ "$runner" = claude ] && [ "$has_python3" = 0 ]; then
   echo "no python3 on PATH: this launch has no Arc receipt and will not link to Arc" >&2
 fi
 if [ -n "$notify_thread" ] && [ "$attach" = 1 ]; then echo "--notify-thread requires a detached session" >&2; exit 2; fi
+# Callback delivery shares the receipt protocol and adapts shell executables to Bash.
+if [ -n "$notify_thread" ]; then
+  if ! python3 -c 'import sys; assert sys.version_info >= (3,10)' >/dev/null 2>&1 || [ ! -f "$skill_dir/receipt.py" ]; then
+    echo "callback delivery requires Python 3.10 and the receipt helper. Use standalone delivery without --notify-thread." >&2
+    exit 2
+  fi
+  dispatch_cli_bash="$(command -v bash)"
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) dispatch_cli_bash="$(cygpath -w "$dispatch_cli_bash")" ;;
+  esac
+  export DISPATCH_CLI_BASH="$dispatch_cli_bash"
+  exec python3 "$skill_dir/dispatch.py" "${original_args[@]}"
+fi
+
 cwd="$(cd "$cwd" && pwd)"
 prompt="$(cd "$(dirname "$prompt")" && pwd)/$(basename "$prompt")"
 # With --name, the default log is <prompt stem>.<name>.log, so two named launches from one
@@ -154,6 +187,24 @@ print_common_record() {
   echo "log: $log"
 }
 
+# Claude Code starts a model older than Opus 4.6 in manual mode, whatever --permission-mode
+# says. dispatch.py's claude_model_has_auto_mode carries the reason. An unnamed model is the
+# account default, which supports auto mode.
+readonly_model_has_auto_mode() {
+  local name minor version_re='(opus|sonnet)-4([-.]([0-9]+))?' haiku_re='haiku-5-5($|[-.:]|\[)'
+  name="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  [ -z "$name" ] && return 0
+  if [ "$name" = haiku ] || [[ "$name" =~ $haiku_re ]]; then return 0; fi
+  case "$name" in *haiku*|*claude-3*) return 1 ;; esac
+  if [[ "$name" =~ $version_re ]]; then
+    minor="${BASH_REMATCH[3]}"
+    # An eight-digit suffix is a release date, as in claude-sonnet-4-20250514.
+    [ -n "$minor" ] && [ "${#minor}" -lt 8 ] && [ "$((10#$minor))" -ge 6 ] && return 0
+    return 1
+  fi
+  return 0
+}
+
 print_arc_receipt() {
   python3 -c 'import json,sys
 receipt = {"agent": "claude", "session_id": sys.argv[1], "name": sys.argv[2]}
@@ -176,20 +227,38 @@ if [ "$runner" = claude ]; then
       readonly_tools+=("$tool")
     done
 
-    # An allow rule in any settings file outranks dontAsk, so a rule such as
-    # Bash(python3 -c *) would let a reviewer write. With no settings loaded, dontAsk runs
-    # only Bash commands Claude Code classifies as read-only. An MCP read needs the
-    # settings that configure its server, so that run keeps them and loses both shells.
+    # An allow rule in a settings file skips both dontAsk and the auto mode classifier, so
+    # a rule such as Bash(npm run build *) would let a reviewer write. An MCP read keeps
+    # the settings that configure its server, stays in dontAsk and loses both shells. Every
+    # other run loads no settings and no MCP servers, and runs Bash under auto mode, with
+    # deny rules for the git commands that write. A model without auto mode runs in
+    # dontAsk instead. dispatch.py carries the full reason, the same lists and the same
+    # model test, and test.sh holds the two rule sets equal.
     if [ "${#read_tools[@]}" -eq 0 ]; then
-      settings_args=(--setting-sources "")
+      readonly_mode=auto
+      if ! readonly_model_has_auto_mode "$model"; then
+        readonly_mode=dontAsk
+        echo "$model has no auto mode, so this read-only session runs one plain read command at a time. Pipes, chains and git -C are denied. Choose a model with auto mode, such as sonnet, for a review that needs them." >&2
+      fi
+      settings_args=(--setting-sources "" --strict-mcp-config)
       shell_denials=(PowerShell)
+      git_deny_verbs=(add am apply archive bisect bundle checkout checkout-index cherry-pick clean clone commit commit-tree config credential fast-import fetch filter-branch format-patch gc hash-object init maintenance merge merge-file mergetool mktag mktree mv pack-refs prune pull push read-tree rebase "reflog delete" "reflog expire" repack replace rerere reset restore revert rm sparse-checkout stash submodule switch symbolic-ref update-index update-ref "worktree add" "worktree lock" "worktree move" "worktree prune" "worktree remove" "worktree repair" "worktree unlock" write-tree)
+      git_deny_with_args=(branch notes remote tag)
+      for verb in "${git_deny_verbs[@]}"; do
+        shell_denials+=("Bash(git $verb)" "Bash(git $verb *)" "Bash(git -C * $verb)" "Bash(git -C * $verb *)")
+      done
+      for verb in "${git_deny_with_args[@]}"; do
+        shell_denials+=("Bash(git $verb *)" "Bash(git -C * $verb *)")
+      done
+      shell_denials+=("Bash(git * --output*)")
     else
+      readonly_mode=dontAsk
       settings_args=()
       shell_denials=(Bash PowerShell)
     fi
 
     args=(-p
-      --permission-mode dontAsk
+      --permission-mode "$readonly_mode"
       --permission-prompts none
       "${settings_args[@]}"
       --allowedTools "${readonly_tools[@]}"
@@ -361,7 +430,13 @@ if [ "$runner" = claude ]; then
     echo "watch: claude logs $id"
     echo "attach: claude attach $id"
     echo "stop: claude stop $id"
-    echo "remove: claude rm $id"
+    if [ "$worktree" = 1 ]; then
+      remove_home="$(worktree_home "$cwd")"
+      remove_tree="$remove_home/.claude/worktrees/$name"
+      echo "remove: python3 '$skill_dir/../references/scripts/remove-worktree.py' --repository '$remove_home' '$remove_tree' && [ ! -e '$remove_tree' ] && claude rm $id"
+    else
+      echo "remove: claude rm $id"
+    fi
     if [ -n "$notify_thread" ]; then
       nohup "$skill_dir/watch-claude.sh" "$claude_bin" "$codex_bin" "$id" "$name" "$notify_thread" "claude logs $id" "claude attach $id" > "$notify_log" 2>&1 &
       echo "notify-thread: $notify_thread"

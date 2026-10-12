@@ -1,14 +1,16 @@
 ---
 name: consult
 description: "Hand off a hard problem to multiple independent agents using different models in parallel, synthesize their answers, and run a falsification round on any design proposal before it is built. Use when: stuck on a hard problem, no obvious solution, want multi-model perspectives, consult panel, brainstorm with models, second opinion on tricky design, want a proposal attacked before committing to it. Saves context tokens by running consultations in isolated subagents."
-argument-hint: "[models...] e.g. 'opus sol gemini' or blank for current model + sonnet"
+argument-hint: "[models...] e.g. 'opus sol gemini' or blank for the shared model defaults"
 ---
 
 # Multi-Agent Consult
 
 Hand off a problem or prompt to multiple independent subagents running on different models, then synthesize their responses. Useful for hard problems where the main session has no obvious solution and you want diverse perspectives without polluting the main context.
 
-**This skill replaces manual copy-pasting between chat windows.** The agent dispatches the same prompt to every requested model in parallel, waits for all responses, and combines them into a single synthesis. The user should never have to copy a prompt or response by hand.
+**This skill replaces manual copy-pasting between chat windows.** The agent dispatches the same prompt to every requested model in parallel, waits for all responses, and combines them into a single synthesis. The author should never have to copy a prompt or response by hand.
+
+Read [../references/owner-brief.md](../references/owner-brief.md) before preparing any worker prompt. Apply it to initial briefs, review rounds, refreshed briefs, and native or dispatched consultation and falsification rounds.
 
 ## When to Use
 
@@ -30,25 +32,29 @@ Hand off a problem or prompt to multiple independent subagents running on differ
 
 Before launching subagents, make sure the problem statement is self-contained. Each subagent starts with zero conversation context, so the prompt must include everything needed to reason about the problem.
 
-If the user's request is vague (e.g. "ask the models what they think"), restate the problem in your own words and confirm with the user before dispatching. A bad prompt to four models wastes four times the tokens.
+Use the author's stated problem, options, exclusions, and model choices. Do not ask the author to confirm choices already settled in the request or conversation.
+
+Ask only about missing information that changes the problem, scope, or authority to proceed. Resolve routine prompt details from the available context.
 
 A measured claim in the brief carries the two measurements behind it. A brief that says a prediction was falsified must give the predicted value, the observed value, and the timestamps of both. Every model reasons from that claim, so a wrong one buys the same wrong answer as many times as there are panel members, and the error hides in the agreement between them.
 
-For non-trivial consults, specifically confirm with the user: (a) the candidate option set you intend to send (labels and brief descriptions), (b) any options to rule out upfront so the panel doesn't waste cycles on them, (c) which models to query. A 10-second confirm avoids re-running 3 subagents.
+Include the candidate options and exclusions in the brief. Use the model defaults in step 2 when the author specifies none.
 
 ### 2. Parse Model Arguments
 
-The user may specify models in the argument. Parse the argument to identify requested models:
+Read [../references/model-providers.md](../references/model-providers.md) before selecting models or launching the panel. Its provider restrictions govern native overrides and fresh CLI sessions.
+
+The author may specify models in the argument. Parse the argument to identify requested models:
 
 The shorthands, and how to pass a model to `runSubagent`, are in [../references/models.md](../references/models.md). Read it rather than assuming a version; `pre-commit-review` shares that file, so neither skill carries its own copy.
 
 If multiple models are specified, run one subagent per model **in parallel** in a single tool-call block.
 
-If no models are specified, use the blank-argument default from that table. If the current session model is one of those, omit the `model` parameter for it.
+If no models are specified, use the blank-argument default from that table.
 
-### Dispatch route: OpenAI models via the codex CLI (shell)
+### Dispatch route when native tools cannot reach the requested model
 
-Where `runSubagent` cannot target an OpenAI model (e.g. Claude Code), dispatch GPT through the codex CLI as a shell task: `codex exec --sandbox read-only "<self-contained prompt>"`. It uses whatever model `$CODEX_HOME/config.toml` (by default `~/.codex/config.toml`) sets as the default, so read that file rather than assuming a variant. Override per run with `-c model=...`. Record the variant you actually got wherever model evidence is kept, because the configured default moves. Gotchas, each learned from a real run:
+Follow the fresh CLI route in [../references/model-providers.md](../references/model-providers.md) when native tools cannot reach the requested model. Select the matching Claude or Codex runner. Use the dispatch launcher's read-only mode and record the actual model and provider. Consultation members are workflow workers, including when the author names their models. Apply the ownership rule in [Dispatch's The words section](../dispatch/SKILL.md#the-words). Keep this consult's prompt and result contract. The following constraints apply to Codex CLI launches:
 
 - A deep run outlives a 10-minute foreground shell timeout. Run it in the background and read the output file on completion.
 - Do not pipe large diffs or files through stdin. The read-only sandbox lets codex read the repo itself: name a commit hash or file paths and let it run its own git and reads - it also finds surrounding context stdin would have hidden.
@@ -69,6 +75,8 @@ Write a self-contained prompt for the panel; one member gets a variant (see the 
 - **What you want back**: Concrete deliverable. A diagnosis? A design proposal? Multiple candidate solutions with tradeoffs? Pseudocode? A direct answer?
 - **Scope limits**: Read-only vs. write. Almost always read-only for a consult. Tell the subagent explicitly: "Do not edit files. Return your analysis as text."
 
+When interface shape or ownership is uncertain, request a minimal caller example before proposed types and signatures. Compare runnable alternatives only when a specific unresolved question requires execution. Keep sketches in the report unless the author authorizes file changes.
+
 **When the consult cannot reach the source** (an external web chat), the prompt is all it has: mark every load-bearing claim measured or reasoned with its file:line, and say in as many words that the requirement list is attackable - "if a premise here is wrong, saying so is the most valuable thing you can return." Its answer is still frame-bound by construction, so treat its silence about source-level constraints as unknown rather than as clearance, say so in the synthesis, and re-verify its premises against the code before anything is built on it.
 
 Subagents should reason independently. Do not tell them what other models are being asked or what answer is expected. Each one should form its view from the prompt alone.
@@ -86,15 +94,15 @@ For each requested model, call `runSubagent` with:
 - `agentName`: Use `Explore` if the agent is available and the consult is purely read-only research. Otherwise omit to use the default agent. Pick whichever fits the task better.
 - `prompt`: The consult prompt from Step 3 - the frame-attacker variant for one member on a design consult
 
-Launch all subagents in a single tool-call block so they run in parallel. Do not serialize them. Do not ask the user to relay anything to other chats; the whole point is automation. Wait for every subagent to return before synthesizing.
+Launch all subagents in a single tool-call block so they run in parallel. Do not serialize them. Do not ask the author to relay anything to other chats; the whole point is automation. Wait for every subagent to return before synthesizing.
 
 ### 5. Synthesize Results
 
-After all subagents return, present a synthesis to the user. Do not dump the full raw responses. Aim for:
+After all subagents return, present a synthesis to the author. Do not dump the full raw responses. Aim for:
 
 **Convergence summary** (1-3 sentences): Where do the models agree? Convergence across independent models is a strong signal.
 
-If your consult prompt defined a labeled option set (A/B/C/...), briefly restate each label's meaning in the synthesis. The user did not see the prompt sent to the subagents and cannot map labels back to options.
+If your consult prompt defined a labeled option set (A/B/C/...), briefly restate each label's meaning in the synthesis. The author did not see the prompt sent to the subagents and cannot map labels back to options.
 
 **Divergence table**: Where do they disagree, and on what?
 
@@ -109,12 +117,9 @@ If your consult prompt defined a labeled option set (A/B/C/...), briefly restate
 
 **Your read**: A short take from the main session on which direction looks strongest and why, or which questions remain open. Be willing to disagree with the panel if you have reason to.
 
-Then **ask the user** what they want next:
-- Run the falsification round (step 6) on the leading proposal - the default for anything you intend to build
-- Proceed with one of the proposed approaches
-- Drill into a specific model's reasoning
-- Run a follow-up consult with a refined prompt
-- Move on with your own synthesis
+Continue the author's authorized task after synthesis. Run step 6 before building a design proposal. A consultation-only request ends with the synthesis.
+
+Ask the author only when a remaining decision changes the outcome or requires additional authority. Do not present a routine next-step menu when the request already supplies the next action.
 
 ### 6. The Falsification Round (design consults)
 
@@ -132,7 +137,7 @@ The loop costs real tokens and wall time. Spend it where a wrong design ships ex
 
 ### 7. Context Management
 
-The subagent responses can be large. After synthesizing, do not re-quote the full raw responses in later turns. Refer back to specific points by model name and topic if the user asks follow-up questions. If a follow-up needs the full response, re-fetch by running a new targeted consult rather than dragging the original text forward.
+The subagent responses can be large. After synthesizing, do not re-quote the full raw responses in later turns. Refer back to specific points by model name and topic if the author asks follow-up questions. If a follow-up needs the full response, re-fetch by running a new targeted consult rather than dragging the original text forward.
 
 ### 8. Spot-Check the Panel
 

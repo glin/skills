@@ -35,6 +35,8 @@ WATCH_CLAUDE_PY = SKILL_DIR / "watch_claude.py"
 sys.path.insert(0, str(SKILL_DIR))
 import dispatch  # noqa: E402
 import watch_claude  # noqa: E402
+from receipt import Receipt
+import threading
 
 
 CODEX_STUB_SOURCE = '''
@@ -299,6 +301,8 @@ class DispatchTestCase(unittest.TestCase):
         self.env["PATH"] = str(self.bin_dir) + os.pathsep + self.env.get("PATH", "")
         self.env.pop("CLAUDE_BIN", None)
         self.env.pop("CODEX_BIN", None)
+        self.env["ARC_BIN"] = str(self.bin_dir / "missing-arc")
+        self.env.pop("ARC_WINDOW", None)
 
     def _assert_terminal_launcher_resolves_to_stub(self, name, stub_path):
         """Guard: open_window resolves the platform's terminal launcher by searching
@@ -358,7 +362,316 @@ class DispatchTestCase(unittest.TestCase):
 # --- ported from test.sh -----------------------------------------------------
 
 
+class ArcStartTests(DispatchTestCase):
+    def setUp(self):
+        super().setUp()
+        self.arc_calls = Path(self.tmpdir) / "arc-calls.jsonl"
+        self.worker_calls = Path(self.tmpdir) / "worker-args"
+        stub = self.bin_dir / "arc_stub.py"
+        stub.write_text('''import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["DISPATCH_TEST_ARC_CALLS"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps(args) + "\\n")
+host = "a" * 24
+window = {"hostId": host, "folders": [os.getcwd()], "scopeReady": True, "panelReady": True}
+if os.environ.get("DISPATCH_TEST_ARC_FOLDER"): window["folders"] = [os.environ["DISPATCH_TEST_ARC_FOLDER"]]
+case = os.environ.get("DISPATCH_TEST_ARC_CASE", "accepted")
+if args[0] == "--help":
+    legacy = os.environ.get("DISPATCH_TEST_ARC_HELP", "legacy") == "legacy"
+    print("Usage: arc windows [--json]\\n       arc start --prompt-file PATH "
+          + ("(--agent-run | --untagged)" if legacy else "[--agent-run]") + " [--name NAME]")
+elif args[0] == "windows":
+    if case == "unready": window["panelReady"] = False
+    if case == "wrong-folder": window["folders"] = [os.path.dirname(os.getcwd())]
+    windows = [window, {**window, "hostId": "b" * 24}] if case == "ambiguous" else [window]
+    if case == "no-windows": windows = []
+    print(json.dumps({"version": 1, "windows": windows, "complete": case != "incomplete"}))
+else:
+    if case == "stderr-only":
+        print("The selected Arc window is unavailable.", file=sys.stderr)
+        sys.exit(1)
+    request = args[args.index("--request-id") + 1]
+    if case in ("ambiguous", "incomplete", "unready", "wrong-folder"): case = "accepted"
+    if case == "malformed":
+        print("not JSON")
+        sys.exit(1)
+    result = {"version": 1, "requestId": request, "status": case, "requester": None}
+    if case == "refused": result["reason"] = "The requested setup is unavailable."
+    if case in ("accepted", "accepted-with-errors"):
+        result.update(sessionId="12345678-1234-1234-1234-123456789abc", provider=args[args.index("--provider") + 1],
+                      errors=["Name save failed"] if case == "accepted-with-errors" else [])
+    if case == "missing-ack": result.pop("requestId")
+    if case == "conflicting-refusal": result.update(status="refused", sessionId="already-started")
+    override = json.loads(os.environ.get("DISPATCH_TEST_ARC_REPLY_OVERRIDE", "{}"))
+    result.update(override.get("set", {}))
+    for key in override.get("remove", []): result.pop(key, None)
+    print(json.dumps(result))
+    if case == "nonzero" or os.environ.get("DISPATCH_TEST_ARC_NONZERO"): sys.exit(1)
+''', encoding="utf-8")
+        self.env["ARC_BIN"] = str(_write_launcher(self.bin_dir, "arc", stub))
+        if os.name == "nt":
+            entry = self.bin_dir.parent / "cli.cjs"
+            entry.write_text("const {spawnSync} = require('node:child_process');\n"
+                             f"const child = spawnSync({json.dumps(sys.executable)}, "
+                             f"[{json.dumps(str(stub))}, ...process.argv.slice(2)], {{stdio: 'inherit'}});\n"
+                             "process.exit(child.status ?? 1);\n", encoding="utf-8")
+            self.arc_entry = entry
+        self.env["DISPATCH_TEST_ARC_CALLS"] = str(self.arc_calls)
+        self.env["DISPATCH_TEST_CLAUDE_ARGS"] = str(self.worker_calls)
+        self.env["DISPATCH_TEST_CODEX_ARGS"] = str(self.worker_calls)
+
+    def launch(self, extra=(), case="accepted", shell=False, default_cwd=False):
+        arguments = ["--runner", "claude", "--owned", "--arc-dispatch", "--name", "Inspect",
+                     "--prompt", str(self.prompt_path), "--cwd", str(self.work_dir), *extra]
+        if default_cwd:
+            del arguments[arguments.index("--cwd"):arguments.index("--cwd") + 2]
+        if not shell:
+            return self.run_dispatch(arguments, {"DISPATCH_TEST_ARC_CASE": case})
+        bash = dispatch.resolve_git_bash() if os.name == "nt" else shutil.which("bash")
+        if not bash:
+            self.skipTest("Bash unavailable for shell boundary")
+        env = {**self.env, "DISPATCH_TEST_ARC_CASE": case,
+               "CLAUDE_BIN": self.claude_bin_path.replace("\\", "/"),
+               "CODEX_BIN": self.codex_bin_path.replace("\\", "/")}
+        driver = Path(self.tmpdir) / "arc-route.sh"
+        driver.write_text("exec " + " ".join(shlex.quote(value) for value in
+                          [bash.replace("\\", "/"), str(SKILL_DIR / "dispatch.sh").replace("\\", "/"), *arguments]) + "\n",
+                          encoding="utf-8")
+        return subprocess.run([bash, str(driver).replace("\\", "/")],
+                              env=env, cwd=self.work_dir, capture_output=True, text=True, timeout=30)
+
+    def calls(self):
+        return [json.loads(line) for line in self.arc_calls.read_text().splitlines()] if self.arc_calls.exists() else []
+
+    def test_both_launchers_accept_without_starting_a_cli_worker(self):
+        # A legacy Arc lists --untagged in its help. A current Arc starts the reader's session without it.
+        cases = [(shell, case, help_text) for shell in (False, True)
+                 for case in ("accepted", "accepted-with-errors") for help_text in ("legacy", "current")]
+        for shell, case, help_text in cases:
+            with self.subTest(shell=shell, case=case, help=help_text):
+                self.env["DISPATCH_TEST_ARC_HELP"] = help_text
+                result = self.launch(["--model", "claude-haiku-5-5", "--effort", "low"], case, shell)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(self.worker_calls.exists())
+                start = self.calls()[-1]
+                self.assertEqual(start[0], "start")
+                for flag, expected in (("--permissions", "auto"), ("--model", "claude-haiku-5-5"),
+                                       ("--effort", "low"), ("--window", "a" * 24)):
+                    self.assertEqual(start[start.index(flag) + 1], expected)
+                if help_text == "legacy":
+                    self.assertIn("--untagged", start)
+                else:
+                    self.assertNotIn("--untagged", start)
+                self.assertNotIn("--agent-run", start)
+                self.assertIn('"owned":true', result.stdout.splitlines()[-1])
+                self.assertIn("mode: Arc session", result.stdout)
+                if case == "accepted-with-errors": self.assertIn("Name save failed", result.stdout)
+
+    def test_unknown_delivery_never_falls_back_on_either_launcher(self):
+        for shell in (False, True):
+            for case in ("unknown", "malformed", "missing-ack", "nonzero", "conflicting-refusal", "stderr-only"):
+                with self.subTest(shell=shell, case=case):
+                    result = self.launch(case=case, shell=shell)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertFalse(self.worker_calls.exists(), "unknown delivery started a second worker")
+                    self.assertIn("Do not start another worker", result.stderr)
+                    self.assertIn("request:", result.stdout)
+                    if case == "stderr-only":
+                        self.assertIn("The selected Arc window is unavailable.", result.stderr)
+
+    def test_explicit_refusal_falls_back_with_requested_flags(self):
+        self.env["DISPATCH_TEST_ARC_NONZERO"] = "1"
+        for shell in (False, True):
+            for override in ({}, {"remove": ["reason"], "set": {"requester": "parent-session"}}):
+                with self.subTest(shell=shell, override=override):
+                    self.env["DISPATCH_TEST_ARC_REPLY_OVERRIDE"] = json.dumps(override)
+                    result = self.launch(["--permission-mode", "acceptEdits", "--model", "sonnet"], "refused", shell)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("refused before acceptance", result.stderr)
+                    arguments = self.worker_calls.read_text().splitlines()
+                    self.assertEqual(flag_values(arguments, "--permission-mode"), ["acceptEdits"])
+                    self.assertEqual(flag_values(arguments, "--model"), ["sonnet"])
+
+    def test_malformed_refusals_never_start_a_cli_worker_on_either_launcher(self):
+        overrides = [{"set": {"sessionId": value}} for value in ([], False, 0, "", None, {}, "already-started")]
+        overrides += [{"remove": [field]} for field in ("version", "requester", "requestId", "status")]
+        overrides += [{"set": {field: value}} for field, values in (
+            ("version", (True, 0, "1", None)),
+            ("requester", (False, [], "", "x" * 257)),
+            ("reason", (None, False, [], {})),
+            ("status", (False, [], {})),
+        ) for value in values]
+        overrides.append({"set": {"provider": "claude"}})
+        for shell in (False, True):
+            for override in overrides:
+                with self.subTest(shell=shell, override=override):
+                    self.arc_calls.unlink(missing_ok=True)
+                    self.env["DISPATCH_TEST_ARC_REPLY_OVERRIDE"] = json.dumps(override)
+                    result = self.launch(case="refused", shell=shell)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertFalse(self.worker_calls.exists(), "malformed refusal started a second worker")
+                    self.assertEqual([call[0] for call in self.calls()], ["windows", "--help", "start"])
+                    self.assertIn("mode: Arc delivery unknown", result.stdout)
+                    self.assertIn("request:", result.stdout)
+                    self.assertIn("Do not start another worker", result.stderr)
+
+    def test_unready_ambiguous_incomplete_or_wrong_folder_refuses_before_start(self):
+        for case in ("unready", "ambiguous", "incomplete", "wrong-folder"):
+            with self.subTest(case=case):
+                self.arc_calls.unlink(missing_ok=True)
+                result = self.launch(case=case)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("refused before acceptance", result.stderr)
+                self.assertEqual([call[0] for call in self.calls()], ["windows"])
+
+    def test_explicit_window_selects_one_from_ambiguous_discovery(self):
+        self.env["ARC_WINDOW"] = "a" * 24
+        result = self.launch(case="ambiguous")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls()[-1][0], "start")
+
+    def test_attach_selects_reader_owned_arc_without_terminal(self):
+        self._stub_attach_launcher()
+        if os.name == "nt":
+            (self.bin_dir / "wt").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        for shell in (False, True):
+            result = self.launch(["--attach"], shell=shell)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(self.worker_calls.exists())
+            self.assertFalse(Path(dispatch.strip_ext(str(self.prompt_path)) + ".run.sh").exists())
+
+    def test_read_only_owned_requests_keep_enforced_transport(self):
+        result = self.launch(["--read-only", "--wait"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertIn("--disallowedTools", self.worker_calls.read_text())
+
+    def test_codex_default_refuses_arc_and_full_access_maps_exactly(self):
+        result = self.launch(["--runner", "codex"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Codex workspace-write with no approvals", result.stderr)
+        self.assertEqual(self.calls(), [])
+        wait_for_file(self.worker_calls)
+        arguments = self.worker_calls.read_text().splitlines()
+        self.assertEqual(arguments[arguments.index("-s") + 1], "workspace-write")
+        self.worker_calls.unlink()
+        result = self.launch(["--runner", "codex", "--full-access", "--model", "sol"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        start = self.calls()[-1]
+        self.assertEqual(start[start.index("--permissions") + 1], "never")
+        self.assertEqual(start[start.index("--model") + 1], "gpt-6.1-sol")
+        self.assertFalse(self.worker_calls.exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows cmd boundary")
+    def test_windows_arc_arguments_remain_literal_on_both_launchers(self):
+        self.env["DISPATCH_TEST_EXPANSION"] = "expanded"
+        for package in (False, True):
+            if package:
+                entry = self.bin_dir / "node_modules/@glin/arc/dist/arc.cjs"
+                entry.parent.mkdir(parents=True)
+                entry.write_bytes(self.arc_entry.read_bytes())
+                self.arc_entry.unlink()
+            for shell in (False, True):
+                for name in ("A&ver", "%DISPATCH_TEST_EXPANSION%", 'A|ver<>^!()"&ver'):
+                    with self.subTest(package=package, shell=shell, name=name):
+                        result = self.launch(["--name", name, "--model", "%DISPATCH_TEST_EXPANSION%"], shell=shell)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        start = self.calls()[-1]
+                        self.assertEqual(start[start.index("--name") + 1], name)
+                        self.assertEqual(start[start.index("--model") + 1], "%DISPATCH_TEST_EXPANSION%")
+                        self.assertNotIn("Microsoft Windows", result.stdout)
+                        self.assertFalse(self.worker_calls.exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows cmd boundary")
+    def test_unknown_windows_arc_wrapper_refuses_without_running_it(self):
+        self.arc_entry.unlink()
+        for shell in (False, True):
+            result = self.launch(shell=shell)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("cannot preserve literal arguments", result.stderr)
+            self.assertEqual(self.calls(), [])
+            self.assertTrue(self.worker_calls.exists())
+
+    def test_unsupported_claude_permissions_preserve_cli_on_both_launchers(self):
+        for shell in (False, True):
+            for mode in ("dontAsk", "bypassPermissions"):
+                with self.subTest(shell=shell, mode=mode):
+                    result = self.launch(["--permission-mode", mode], shell=shell)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("refused before acceptance", result.stderr)
+                    self.assertEqual(self.calls(), [])
+                    self.assertEqual(flag_values(self.worker_calls.read_text().splitlines(), "--permission-mode"), [mode])
+
+    def test_local_prompt_incompatibilities_refuse_before_contact_on_both_launchers(self):
+        for shell in (False, True):
+            for content in (b"X" * (60 * 1024), b"", b" \n /command", b"\xef\xbb\xbf /command"):
+                with self.subTest(shell=shell, size=len(content)):
+                    self.prompt_path.write_bytes(content)
+                    result = self.launch(shell=shell)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("refused before acceptance", result.stderr)
+                    self.assertEqual(self.calls(), [])
+                    self.assertTrue(self.worker_calls.exists())
+            result = self.launch(["--prompt", str(self.work_dir)], shell=shell)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("must exist", result.stderr)
+            self.assertEqual(self.calls(), [])
+
+    def test_no_windows_reports_no_available_window_on_both_launchers(self):
+        for shell in (False, True):
+            result = self.launch(case="no-windows", shell=shell)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("no Arc window is available", result.stderr)
+            self.assertNotIn("select one Arc window", result.stderr)
+
+    def test_default_cwd_junction_or_symlink_matches_registered_folder(self):
+        folder = self.work_dir
+        alias = Path(self.tmpdir) / "workspace-alias"
+        if os.name == "nt":
+            script = "New-Item -ItemType Junction -Path $env:DISPATCH_TEST_ALIAS -Target $env:DISPATCH_TEST_FOLDER -ErrorAction Stop | Out-Null"
+            subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True,
+                           env={**os.environ, "DISPATCH_TEST_ALIAS": str(alias), "DISPATCH_TEST_FOLDER": str(folder)})
+        else:
+            alias.symlink_to(folder, target_is_directory=True)
+        self.work_dir = alias
+        self.env["DISPATCH_TEST_ARC_FOLDER"] = str(folder)
+        try:
+            for shell in (False, True):
+                result = self.launch(shell=shell, default_cwd=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("mode: Arc session", result.stdout)
+                self.assertFalse(self.worker_calls.exists())
+        finally:
+            self.work_dir = folder
+            os.rmdir(alias) if os.name == "nt" else alias.unlink()
+
+
 class ClaudeWritableTests(DispatchTestCase):
+    def test_haiku_shorthand_and_explicit_ids_reach_claude(self):
+        cases = {
+            "haiku": "claude-haiku-5-5",
+            "claude-haiku-5-5": "claude-haiku-5-5",
+            "claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
+            "sonnet": "sonnet",
+        }
+        for read_only in (False, True):
+            for model, expected in cases.items():
+                with self.subTest(read_only=read_only, model=model):
+                    args_file = Path(self.tmpdir) / f"args-{read_only}-{model}.log"
+                    result = self.run_dispatch(
+                        ["--runner", "claude", "--model", model,
+                         "--prompt", str(self.prompt_path), "--cwd", str(self.work_dir),
+                         *(["--read-only", "--wait"] if read_only else [])],
+                        {"DISPATCH_TEST_CLAUDE_ARGS": str(args_file)},
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    wait_for_file(args_file)
+                    lines = args_file.read_text(encoding="utf-8").splitlines()
+                    self.assertEqual(flag_values(lines, "--model"), [expected])
+                    self.assertIn(f"model: {expected}", result.stdout)
+                    mode = "dontAsk" if read_only and "4-5" in model else "auto"
+                    self.assertEqual(flag_values(lines, "--permission-mode"), [mode])
+
     def test_default_permission_mode_is_auto(self):
         args_file = Path(self.tmpdir) / "claude-args.log"
         result = self.run_dispatch(
@@ -405,9 +718,9 @@ class ClaudeWritableTests(DispatchTestCase):
         content = queue_log.read_text(encoding="utf-8")
         self.assertEqual(len(content.splitlines()), 1)
         self.assertIn("--thread origin-789 --message Fresh-session handoff dispatch-", content)
-        self.assertIn("completed. Result: claude logs claude-test", content)
+        self.assertIn("unverified (exit unknown). Result:", content)
         self.assertIn("notify-thread: origin-789", result.stdout)
-        self.assertIn(f"notify-log: {self.expected_notify_log(log_path)}", result.stdout)
+        self.assertIn("monitor.log", result.stdout)
         self.assertIn("monitor-pid:", result.stdout)
 
     def test_notify_thread_reports_blocked_state(self):
@@ -496,6 +809,56 @@ class WorktreeBaseTests(DispatchTestCase):
 
 
 class CodexNotifyTests(DispatchTestCase):
+    def test_shell_callback_runs_bash_scripts_with_shared_receipts(self):
+        bash = dispatch.resolve_git_bash() if os.name == 'nt' else shutil.which('bash')
+        if not bash:
+            self.skipTest('Bash is unavailable')
+        env = dict(self.env)
+        env.pop('DISPATCH_CLI_BASH', None)
+        for name in ('codex', 'claude'):
+            script = self.bin_dir / (name + '-script')
+            script.write_text('#!/usr/bin/env bash\nexec ' + shlex.quote(Path(sys.executable).as_posix()) +
+                              ' ' + shlex.quote((self.bin_dir / (name + '_stub.py')).as_posix()) + ' "$@"\n', encoding='utf-8')
+            os.chmod(script, 0o755)
+            env[name.upper() + '_BIN'] = str(script)
+            if os.name == 'nt':
+                with self.assertRaises(OSError):
+                    subprocess.Popen([str(script)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for runner, flags in [('codex', []), ('claude', ['--read-only']), ('claude', [])]:
+            with self.subTest(runner=runner, flags=flags):
+                queue = Path(self.tmpdir) / ('queue-' + runner + str(len(flags)))
+                env.update(DISPATCH_TEST_QUEUE_LOG=str(queue), DISPATCH_NOTIFY_INITIAL_SECONDS='0',
+                           DISPATCH_NOTIFY_MAX_SECONDS='0', DISPATCH_NOTIFY_TIMEOUT_SECONDS='10',
+                           DISPATCH_TEST_CLAUDE_STATE_FILE=str(queue) + '.registry')
+                result = subprocess.run([bash, str(SKILL_DIR / 'dispatch.sh'), '--runner', runner,
+                                         *flags, '--prompt', str(self.prompt_path), '--cwd', str(self.work_dir),
+                                         '--notify-thread', 'parent'], env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                receipt = Receipt(next(line[9:] for line in result.stdout.splitlines() if line.startswith('receipt: ')))
+                wait_for_file(queue)
+                deadline = time.monotonic() + 10
+                while receipt.read()['events'][-1]['delivery'] == 'submitting' and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                data = receipt.read()
+                self.assertEqual(len(queue.read_text().splitlines()), 1)
+                self.assertEqual(len(data['events']), 1)
+                self.assertEqual(data['events'][0]['delivery'], 'accepted')
+                self.assertEqual(data['events'][0]['consumption'], 'unread')
+                self.assertEqual(len(data['events'][0]['attempts']), 1)
+                self.assertTrue(data['cli_bash'])
+                self.assertEqual(Path(data['report']).parent, receipt.root)
+                self.assertEqual(data['events'][0]['kind'], 'unverified' if not flags and runner == 'claude' else 'completed')
+                revision = receipt.observe('failed', 7)
+                recovery_env = dict(env)
+                recovery_env.pop('DISPATCH_CLI_BASH', None)
+                recovered = subprocess.run([sys.executable, str(SKILL_DIR / 'receipt.py'), str(receipt.root),
+                                            'recover', '--event', revision['id']], env=recovery_env,
+                                           capture_output=True, text=True, timeout=30)
+                self.assertEqual(recovered.returncode, 0, recovered.stderr)
+                self.assertEqual(len(queue.read_text().splitlines()), 2)
+                self.assertEqual(receipt.read()['events'][-1]['delivery'], 'accepted')
+                self.assertEqual(len(receipt.read()['events'][-1]['attempts']), 1)
+
     def test_success_queues_one_completion_notice(self):
         queue_log = Path(self.tmpdir) / "queue.log"
         result_marker = Path(self.tmpdir) / "run.last.md"
@@ -503,7 +866,7 @@ class CodexNotifyTests(DispatchTestCase):
         result = self.run_dispatch(
             ["--runner", "codex", "--prompt", str(self.prompt_path), "--cwd", str(self.work_dir),
              "--log", str(log_path), "--notify-thread", "origin-123"],
-            extra_env={"DISPATCH_TEST_QUEUE_LOG": str(queue_log), "DISPATCH_TEST_EXPECT_RESULT": str(result_marker)},
+            extra_env={"DISPATCH_TEST_QUEUE_LOG": str(queue_log), "DISPATCH_TEST_EXPECT_RESULT": ""},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         wait_for_file(queue_log)
@@ -512,7 +875,7 @@ class CodexNotifyTests(DispatchTestCase):
         self.assertIn("--thread origin-123 --message Fresh-session handoff dispatch-", content)
         self.assertIn("completed (exit 0). Result:", content)
         self.assertIn("notify-thread: origin-123", result.stdout)
-        self.assertIn(f"notify-log: {self.expected_notify_log(log_path)}", result.stdout)
+        self.assertIn("monitor.log", result.stdout)
         self.assertIn("session: codex-test-thread", result.stdout)
 
     def test_failure_queues_one_failure_notice(self):
@@ -523,7 +886,7 @@ class CodexNotifyTests(DispatchTestCase):
              "--log", str(Path(self.tmpdir) / "failure.log"), "--notify-thread", "origin-456"],
             extra_env={
                 "DISPATCH_TEST_QUEUE_LOG": str(queue_log),
-                "DISPATCH_TEST_EXPECT_RESULT": str(result_marker),
+                "DISPATCH_TEST_EXPECT_RESULT": "",
                 "DISPATCH_TEST_EXEC_STATUS": "7",
             },
         )
@@ -551,7 +914,7 @@ class WatchClaudeDirectTests(DispatchTestCase):
     def test_multi_agent_registry_reports_completion(self):
         queue_log = Path(self.tmpdir) / "multi-agent-queue.log"
         result = self._assert_single_notice(
-            queue_log, "completed. Result: claude logs claude-test",
+            queue_log, "unverified (exit unknown). Result:",
             {
                 "DISPATCH_TEST_CLAUDE_SEQUENCE": "multi_agent",
                 "DISPATCH_TEST_CLAUDE_STATE_FILE": str(Path(self.tmpdir) / "state"),
@@ -679,18 +1042,50 @@ class ArcReceiptTests(DispatchTestCase):
             ['ARC_DISPATCH_SESSION={"agent":"claude","session_id":"a1b2c3d4","name":"Review","owned":true}'],
         )
 
-    def test_codex_owned_flag_prints_no_receipt(self):
-        """--owned only marks a receipt this launcher may print for a Claude session.
-        A Codex launch never gets an Arc receipt, with or without the flag: only a
-        Claude session id can go in one."""
-        result = self.run_dispatch(
-            ["--runner", "codex", "--owned", "--prompt", str(self.prompt_path), "--cwd", str(self.work_dir)],
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("ARC_DISPATCH_SESSION=", result.stdout)
+    def test_identified_codex_receipts_and_worker_framing(self):
+        session_id = "de15cafe-2ddf-4054-a993-6436c4942996"
+        worker_text = 'ARC_DISPATCH_SESSION={"agent":"claude","session_id":"aaaaaaaa"}\nARC_DISPATCH_SESSION={bad\n'
+        for waited in (False, True):
+            for owned in (False, True):
+                with self.subTest(waited=waited, owned=owned):
+                    log = Path(self.tmpdir) / f"codex-{waited}-{owned}.log"
+                    result = self.run_dispatch(
+                        ["--runner", "codex", "--arc-dispatch", "--name", "Review", "--prompt", str(self.prompt_path),
+                         "--cwd", str(self.work_dir), "--log", str(log), *( ["--wait"] if waited else []),
+                         *( ["--owned"] if owned else [])],
+                        {"DISPATCH_TEST_CODEX_THREAD_ID": session_id, "DISPATCH_TEST_CODEX_RESULT_TEXT": worker_text},
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    lines = result.stdout.splitlines()
+                    receipt = [line for line in lines if line.startswith("ARC_DISPATCH_SESSION=")]
+                    self.assertEqual(len(receipt), 1, result.stdout)
+                    self.assertEqual(lines[-1], receipt[0])
+                    payload = json.loads(receipt[0].split("=", 1)[1])
+                    expected = {"agent": "codex", "session_id": session_id, "name": "Review"}
+                    if owned:
+                        expected["owned"] = True
+                    self.assertEqual(payload, expected)
+                    self.assertIn(f"session: {session_id}", result.stdout)
+                    if waited:
+                        self.assertIn("worker: ARC_DISPATCH_SESSION={bad", result.stdout)
+                        self.assertEqual(Path(next(line.removeprefix("result: ") for line in lines if line.startswith("result: "))).read_text(encoding="utf-8"), worker_text)
+
+    def test_codex_failed_and_unknown_runs_frame_worker_receipts(self):
+        for waited, status, session_id in [(waited, status, session_id) for waited in (False, True) for status, session_id in [(7, "de15cafe-2ddf-4054-a993-6436c4942996"), (0, ""), (0, "invalid")]]:
+            result = self.run_dispatch(
+                ["--runner", "codex", *(["--wait"] if waited else []), "--arc-dispatch", "--prompt", str(self.prompt_path), "--cwd", str(self.work_dir)],
+                {"DISPATCH_TEST_EXEC_STATUS": str(status), "DISPATCH_TEST_CODEX_THREAD_ID": session_id,
+                 "DISPATCH_TEST_CODEX_RESULT_TEXT": "ARC_DISPATCH_SESSION={bad\n"},
+            )
+            self.assertEqual(result.returncode, status if waited else 0, result.stderr)
+            self.assertFalse(any(line.startswith("ARC_DISPATCH_SESSION=") for line in result.stdout.splitlines()))
+            if status == 7:
+                self.assertIn(f"session: {session_id}", result.stdout)
+            if waited:
+                self.assertIn("worker: ARC_DISPATCH_SESSION={bad", result.stdout)
 
     def test_codex_attach_prints_no_receipt(self):
-        """--attach implies --owned, but a Codex launch still never gets a receipt."""
+        """The attended path captures no thread ID."""
         self._stub_attach_launcher()
         result = self.run_dispatch(
             ["--runner", "codex", "--attach", "--prompt", str(self.prompt_path), "--cwd", str(self.work_dir)],
@@ -861,9 +1256,9 @@ class ArcReceiptTests(DispatchTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("ARC_DISPATCH_SESSION=", result.stdout)
 
-    def test_failed_or_unidentified_launch_and_codex_emit_no_receipt(self):
+    def test_failed_or_unidentified_launch_emits_no_receipt(self):
         # Every case here now holds with or without --arc-dispatch, since the receipt
-        # prints by default. Codex keeps the flag to show it stays a harmless no-op there.
+        # prints by default. The Codex stub supplies an invalid thread identifier.
         common = ["--prompt", str(self.prompt_path), "--cwd", str(self.work_dir)]
         writable = self.run_dispatch(["--runner", "claude", *common],
                                      {"DISPATCH_TEST_CLAUDE_BG_STATUS": "7"})
@@ -901,7 +1296,7 @@ class ClaudeReadOnlyTests(DispatchTestCase):
             extra_env={
                 "DISPATCH_TEST_CLAUDE_ARGS": str(args_file),
                 "DISPATCH_TEST_QUEUE_LOG": str(queue_log),
-                "DISPATCH_TEST_EXPECT_RESULT": str(result_path),
+                "DISPATCH_TEST_EXPECT_RESULT": "",
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -933,10 +1328,62 @@ class ClaudeReadOnlyTests(DispatchTestCase):
         wait_for_file(args_file)
         lines = args_file.read_text(encoding="utf-8").splitlines()
         self.assertEqual(flag_values(lines, "--setting-sources"), [""])
+        self.assertIn("--strict-mcp-config", lines)
+        self.assertEqual(flag_values(lines, "--permission-mode"), ["auto"])
+        self.assertEqual(flag_values(lines, "--permission-prompts"), ["none"])
         denied = flag_values(lines, "--disallowedTools")
         self.assertNotIn("Bash", denied)
-        self.assertIn("PowerShell", denied)
-        self.assertIn("Edit", denied)
+        self.assertNotIn("Bash", flag_values(lines, "--allowedTools"))
+        for tool in ("PowerShell", "Edit", "Write", "NotebookEdit", "MultiEdit"):
+            self.assertIn(tool, denied)
+        # A bare git stash stashes a dirty tree, and git fetch, git branch NAME and
+        # git show --output write refs or files that auto mode could approve.
+        for rule in ("Bash(git commit *)", "Bash(git -C * push *)", "Bash(git -C * stash)",
+                     "Bash(git stash)", "Bash(git fetch)", "Bash(git fetch *)",
+                     "Bash(git -C * fetch *)", "Bash(git branch *)", "Bash(git tag *)",
+                     "Bash(git config *)", "Bash(git add *)", "Bash(git update-ref *)",
+                     "Bash(git worktree remove *)", "Bash(git * --output*)"):
+            self.assertIn(rule, denied)
+        # Bare, these list branches and worktrees, so no rule names them.
+        for rule in ("Bash(git branch)", "Bash(git worktree list *)"):
+            self.assertNotIn(rule, denied)
+
+    def test_a_model_without_auto_mode_keeps_its_read_only_bash(self):
+        """Claude Code starts Haiku 4.5 in manual mode whatever --permission-mode says. The
+        launch then runs it in dontAsk, with the same settings and denials, and says why its
+        chained reads will be denied, so a reviewer's Bash never narrows without a word."""
+        args_file = Path(self.tmpdir) / "claude-args-haiku.log"
+        result = self.run_dispatch(
+            ["--runner", "claude", "--read-only", "--model", "claude-haiku-4-5-20251001",
+             "--prompt", str(self.prompt_path), "--cwd", str(self.work_dir),
+             "--log", str(Path(self.tmpdir) / "claude-read-only-haiku.log")],
+            extra_env={"DISPATCH_TEST_CLAUDE_ARGS": str(args_file)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("claude-haiku-4-5-20251001 has no auto mode", result.stderr)
+        wait_for_file(args_file)
+        lines = args_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(flag_values(lines, "--permission-mode"), ["dontAsk"])
+        self.assertEqual(flag_values(lines, "--setting-sources"), [""])
+        denied = flag_values(lines, "--disallowedTools")
+        self.assertNotIn("Bash", denied)
+        for rule in ("Edit", "Write", "PowerShell", "Bash(git stash)", "Bash(git fetch *)"):
+            self.assertIn(rule, denied)
+
+    def test_only_models_older_than_opus_4_6_lack_auto_mode(self):
+        cases = {
+            None: True, "sonnet": True, "opus": True, "fable": True, "claude-opus-5-5": True,
+            "claude-sonnet-5-5": True, "haiku": True, "claude-haiku-5-5": True,
+            "claude-haiku-5-5[1m]": True,
+            "us.anthropic.claude-haiku-5-5-v1:0": True,
+            "claude-opus-4-6": True, "claude-sonnet-4-6[1m]": True, "claude-opus-4-8": True,
+            "claude-haiku-4-5-20251001": False, "claude-sonnet-4-5": False,
+            "claude-sonnet-4-20250514": False, "claude-opus-4-1-20250805": False,
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0": False,
+            "claude-3-7-sonnet-latest": False,
+        }
+        for model, expected in cases.items():
+            self.assertEqual(dispatch.claude_model_has_auto_mode(model), expected, model)
 
     def test_both_claude_launches_use_a_five_minute_cache(self):
         launches = {
@@ -1104,7 +1551,7 @@ class CodexSessionIdTests(DispatchTestCase):
     def test_codex_model_shorthand_reaches_dash_m(self):
         """A regression here is a shorthand such as sol reaching codex as a literal model
         name instead of the resolved id, which codex would reject with a 400."""
-        self.assertEqual(self.dash_m_for("openai", "sol"), ["gpt-6-sol"])
+        self.assertEqual(self.dash_m_for("openai", "sol"), ["gpt-6.1-sol"])
         self.assertEqual(self.dash_m_for("openai", "luna"), ["gpt-6-luna"])
 
     def test_codex_gpt6_shorthands_reach_dash_m(self):
@@ -1115,7 +1562,8 @@ class CodexSessionIdTests(DispatchTestCase):
         """Bedrock names the model openai.gpt-5.6-sol and rejects the bare id with a 400.
         The bare id stays correct against the OpenAI endpoint, which the test above holds,
         so the prefix has to come from the configured provider rather than the table."""
-        self.assertEqual(self.dash_m_for("amazon-bedrock", "sol"), ["openai.gpt-6-sol"])
+        self.assertEqual(self.dash_m_for("amazon-bedrock", "sol"), ["openai.gpt-6.1-sol"])
+        self.assertEqual(self.dash_m_for("amazon-bedrock", "sol6"), ["openai.gpt-6-sol"])
         self.assertEqual(self.dash_m_for("amazon-bedrock", "luna"), ["openai.gpt-6-luna"])
 
     def test_codex_gpt6_ids_take_the_openai_prefix_on_bedrock(self):
@@ -1126,6 +1574,13 @@ class CodexSessionIdTests(DispatchTestCase):
         """A caller who writes the resolved id instead of the shorthand hits the same 400,
         so the prefix cannot be applied inside the shorthand lookup alone."""
         self.assertEqual(self.dash_m_for("amazon-bedrock", "gpt-5.6-sol"), ["openai.gpt-5.6-sol"])
+
+    def test_codex_explicit_sol_ids_keep_their_version(self):
+        for provider in ("openai", "amazon-bedrock"):
+            for model in ("gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol", "openai.gpt-6-sol"):
+                with self.subTest(provider=provider, model=model):
+                    expected = "openai." + model if provider == "amazon-bedrock" and model.startswith("gpt-") else model
+                    self.assertEqual(self.dash_m_for(provider, model), [expected])
 
 
 class PromptDeliveryTests(DispatchTestCase):
@@ -1352,6 +1807,22 @@ class UnitTests(unittest.TestCase):
                         os.environ[name] = value
         self.assertEqual(os.path.normcase(resolved_claude or ""), os.path.normcase(str(claude_override)))
         self.assertEqual(os.path.normcase(resolved_codex or ""), os.path.normcase(str(codex_override)))
+
+
+class RemoveCommandTests(unittest.TestCase):
+    def test_a_worktree_session_runs_the_removal_script_before_claude_rm(self):
+        home = os.path.join("repo root", "main")
+        tree = os.path.join(home, ".claude", "worktrees", "task")
+        command = dispatch.remove_command("abc123", home, "task")
+        script, _, rest = command.partition(" && ")
+        self.assertEqual(shlex.split(script), [
+            "python3", dispatch.REMOVE_WORKTREE, "--repository", home, tree,
+        ])
+        self.assertTrue(os.path.isfile(dispatch.REMOVE_WORKTREE))
+        self.assertEqual(rest, f"[ ! -e {shlex.quote(tree)} ] && claude rm abc123")
+
+    def test_a_session_without_a_worktree_only_deletes_its_record(self):
+        self.assertEqual(dispatch.remove_command("abc123", None, "task"), "claude rm abc123")
 
 
 class ExtractSessionIdDecodeTests(unittest.TestCase):
@@ -1833,20 +2304,20 @@ CANARY_OTHER_SUBJECT = "canary-second-repo-subject-9d2"
 CANARY_OTHER_MARKER = "canary-second-repo-marker-4c1"
 
 CANARY_PROMPT = """This is a permission test. A denial is an expected result, not a failure.
-After a denial, go straight on to the next tool call. You must attempt all seven, one tool
+After a denial, go straight on to the next tool call. You must attempt all eight, one tool
 call each, even after several denials in a row. Never stop early and never ask a question.
 
-1. Run: git log --oneline -1
-2. Run: git -C {other} show HEAD --stat
-3. Run: git --git-dir={other_git} log --oneline -1
-4. Run: cd {other} && git log --oneline -1
-5. Run: git show --output={written} HEAD
-6. Read the file {marker_file} with the Read tool.
-7. Use the Grep tool to search for {marker} in {other}.
+1. Run with the Bash tool: git log --oneline -1 | cat
+2. Run with the Bash tool: git -C {other} log --oneline -1; wc -l {marker_file}
+3. Run with the Bash tool: git commit --dry-run -m canary
+4. Run with the Bash tool: git stash
+5. Run with the Bash tool: git fetch origin
+6. Run with the Bash tool: git show --output={output} HEAD
+7. Use the Write tool to create the file {written} with the text canary.
+8. Read the file {marker_file} with the Read tool.
 
-Report seven lines. Each line says ran or denied. Quote the output of command 1 in full.
-Quote the output of any of commands 2 to 4 that ran, in full. Quote the content found by
-command 6 in full.
+Report eight lines. Each line says ran or denied. Quote the output of commands 1 and 2 in
+full when they ran. Quote the content found by step 8 in full.
 """
 
 
@@ -1881,39 +2352,47 @@ def _canary_claude_bin():
     return shutil.which(override) if override else shutil.which("claude")
 
 
-def _check_second_repo_isolated(report, denied, other_subject, other_posix):
-    """Raise AssertionError when the report shows the second repository's commit subject,
-    or when no denial names the second repository. A live canary run and a synthetic-report
-    unit test both drive this same check, so a change that weakens it fails without a CLI."""
-    if other_subject in report:
+def _check_second_repo_reached(report, denied, other_subject, other_posix):
+    """Raise AssertionError when a denial names the second repository, or when the report
+    lacks its commit subject. A live canary run and a synthetic-report unit test both drive
+    this same check, so a change that weakens it fails without a CLI."""
+    if [cmd for cmd in denied if other_posix in cmd]:
         raise AssertionError(
-            f"the session read the second repository's commit through git, whatever form "
-            f"it used to get there. Denials: {denied}")
-    if not [cmd for cmd in denied if other_posix in cmd]:
+            f"a Bash read of the second repository was denied, so the session runs in manual "
+            f"mode or a deny rule is too wide. Denials: {denied}")
+    if other_subject not in report:
         raise AssertionError(
-            f"no denial named the second repository. Either the CLI now allows a git read "
-            f"there, or the worker skipped every attempt. Denials: {denied}")
+            f"the report lacks the second repository's commit subject, so git -C never "
+            f"reached it. Denials: {denied}")
 
 
-class ReadOnlyGitLeakDetectionTests(unittest.TestCase):
-    """Exercise _check_second_repo_isolated with a synthetic report, so the check itself
-    is proven to fail on a leak without spending a model request on the live canary."""
+class ReadOnlyGitReachDetectionTests(unittest.TestCase):
+    """Exercise _check_second_repo_reached with synthetic reports, so the check itself is
+    proven to fail on a denied or missing cross-directory read without spending a model
+    request on the live canary."""
 
-    def test_check_fails_when_the_report_holds_the_second_repos_subject(self):
+    def test_check_fails_when_a_denial_names_the_second_repo(self):
         other_posix = "/tmp/dispatch-canary-other"
-        report = f"1. ran: {CANARY_SUBJECT}\n2. ran: {CANARY_OTHER_SUBJECT}\n"
-        denied = [f"cd {other_posix} && git log --oneline -1"]
+        report = f"1. ran: {CANARY_SUBJECT}\n2. denied\n"
+        denied = [f"git -C {other_posix} log --oneline -1"]
         with self.assertRaises(AssertionError):
-            _check_second_repo_isolated(report, denied, CANARY_OTHER_SUBJECT, other_posix)
+            _check_second_repo_reached(report, denied, CANARY_OTHER_SUBJECT, other_posix)
+
+    def test_check_fails_when_the_report_lacks_the_second_repos_subject(self):
+        with self.assertRaises(AssertionError):
+            _check_second_repo_reached(f"1. ran: {CANARY_SUBJECT}\n", [], CANARY_OTHER_SUBJECT,
+                                       "/tmp/dispatch-canary-other")
 
 
 @unittest.skipUnless(_canary_requested(), "set DISPATCH_CANARY=1 to run the real-CLI canary")
 class ReadOnlyGitCanaryTests(unittest.TestCase):
     """Measure what the installed Claude CLI lets a --read-only session run.
 
-    The read-only contract in SKILL.md rests on that classification. It belongs to the
-    CLI and changes between releases, and no stub can stand in for it. This canary
-    drives the real binary and spends one model request, so it stays opt-in.
+    The read-only contract in SKILL.md rests on auto mode and on how Claude Code matches
+    deny rules. Both belong to the CLI and change between releases, and no stub can stand
+    in for them. This canary drives the real binary and spends one model request, so it
+    stays opt-in. Auto mode needs a model that supports it, so the default model is one
+    that does: the launcher runs a model without it in dontAsk, and step 2 is then denied.
     """
 
     @classmethod
@@ -1923,7 +2402,7 @@ class ReadOnlyGitCanaryTests(unittest.TestCase):
                 "DISPATCH_CANARY asked for the real-CLI canary, but no claude executable "
                 "was found (set CLAUDE_BIN or put claude on PATH)")
 
-    def test_a_read_only_session_reads_its_own_repository_and_denies_a_second(self):
+    def test_a_read_only_session_runs_git_reads_and_denies_writes(self):
         tmpdir = tempfile.mkdtemp(prefix="dispatch-canary-")
         self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
         repo = Path(tmpdir) / "repo"
@@ -1948,13 +2427,13 @@ class ReadOnlyGitCanaryTests(unittest.TestCase):
         written = repo / "written.txt"
         prompt = Path(tmpdir) / "prompt.md"
         prompt.write_text(
-            CANARY_PROMPT.format(other=other.as_posix(), other_git=(other / ".git").as_posix(),
-                                  written=written.as_posix(), marker_file=(other / "marker.txt").as_posix(),
-                                  marker=CANARY_OTHER_MARKER),
+            CANARY_PROMPT.format(other=other.as_posix(), written=written.as_posix(),
+                                  output=(repo / "output.patch").as_posix(),
+                                  marker_file=(other / "marker.txt").as_posix()),
             encoding="utf-8",
         )
         log = Path(tmpdir) / "canary.log"
-        model = os.environ.get("DISPATCH_CANARY_MODEL", "claude-haiku-4-5-20251001")
+        model = os.environ.get("DISPATCH_CANARY_MODEL", "sonnet")
 
         result = subprocess.run(
             [sys.executable, str(DISPATCH_PY), "--runner", "claude", "--read-only", "--wait",
@@ -1970,21 +2449,271 @@ class ReadOnlyGitCanaryTests(unittest.TestCase):
         denied = [entry.get("tool_input", {}).get("command", "") for entry in payload.get("permission_denials", [])]
 
         self.assertIn(CANARY_SUBJECT, report,
-                      f"the session never reported a plain git read. Denials: {denied}")
+                      f"the session never reported a piped git read. Denials: {denied}")
         self.assertFalse([cmd for cmd in denied if cmd.startswith("git log")],
                          f"a plain git read was denied, so SKILL.md overstates the reach: {denied}")
 
-        _check_second_repo_isolated(report, denied, CANARY_OTHER_SUBJECT, other.as_posix())
+        _check_second_repo_reached(report, denied, CANARY_OTHER_SUBJECT, other.as_posix())
+
+        for command in ("git commit", "git stash", "git fetch", "git show --output="):
+            self.assertTrue([cmd for cmd in denied if cmd.startswith(command)],
+                            f"no denial for {command}, so the git deny rules no longer match. Denials: {denied}")
+        self.assertFalse(written.exists(), "the Write tool created a file in a read-only session")
 
         self.assertIn(CANARY_OTHER_MARKER, report,
-                      f"Read or Grep did not reach the second repository that --add-dir grants: {report}")
-
-        self.assertTrue([cmd for cmd in denied if "--output=" in cmd],
-                        f"no denial for a writing git flag. Denials: {denied}")
+                      f"Read did not reach the second repository that --add-dir grants: {report}")
 
         for target, label in ((repo, "the first repository"), (other, "the second repository")):
             status = git(target, "status", "--porcelain")
             self.assertEqual(status.stdout.strip(), "", f"the session changed {label}")
+
+class DeliveryReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.receipt = Receipt.create('parent', 'codex', 'worker', str(self.root / 'shared.log'),
+                                      str(self.root / 'shared.md'), 'fake-codex')
+        self.report = Path(self.receipt.read()['report'])
+        self.report.write_text('report A', encoding='utf-8')
+        self.event = self.receipt.observe('completed', 0)
+
+    def queue(self, status=0):
+        return unittest.mock.Mock(return_value=subprocess.CompletedProcess([], status))
+
+    def consume(self, event=None):
+        event = event or self.event
+        launch = self.receipt.read()['launch']
+        claim = self.receipt.claim('parent', launch, event['id'], 'handler')
+        self.receipt.acknowledge('parent', launch, event['id'], 'handler', claim['token'], 'incorporated')
+        return claim
+
+    def test_consumed_callback_never_processes_or_submits_again(self):
+        self.consume()
+        queue = self.queue()
+        self.assertEqual(self.receipt.send(self.event['id'], run=queue), 0)
+        queue.assert_not_called()
+        self.assertEqual(self.receipt.claim('parent', self.receipt.read()['launch'], self.event['id'], 'other'),
+                         {'consumption': 'consumed', 'outcome': 'incorporated'})
+
+    def test_successful_worker_does_not_hide_failed_delivery(self):
+        import io
+        prompt = self.root / 'prompt.md'
+        prompt.write_text('bounded fixture', encoding='utf-8')
+        for runner in ('codex', 'claude'):
+            worker = unittest.mock.Mock()
+            worker.stdout = io.StringIO('')
+            worker.wait.return_value = 0
+            with unittest.mock.patch.object(dispatch.subprocess, 'Popen', return_value=worker), \
+                 unittest.mock.patch.object(watch_claude, 'send_notice', return_value=17):
+                if runner == 'codex':
+                    status = dispatch._codex_pump(['worker'], str(self.root), str(prompt),
+                                                 str(self.root / 'log'), None, str(self.report),
+                                                 'parent', None, 'worker', 'codex')[1]
+                else:
+                    status = dispatch._claude_readonly_pump(['worker'], str(self.root), str(prompt),
+                                                           str(self.root / 'log'), str(self.report),
+                                                           'parent', None, 'worker', 'codex')
+            self.assertEqual(status, 1, runner)
+
+    def test_unknown_acceptance_is_not_automatically_retried(self):
+        queue = self.queue(17)
+        self.assertEqual(self.receipt.send(self.event['id'], run=queue), 1)
+        self.assertEqual(self.receipt.send(self.event['id'], run=queue), 1)
+        queue.assert_called_once()
+        state = self.receipt.read()['events'][-1]
+        self.assertEqual(state['delivery'], 'unknown')
+        self.assertEqual(state['status'], 0)
+        self.assertEqual(state['consumption'], 'unread')
+
+    def test_refresh_preserves_event_and_delivery_history(self):
+        self.receipt.send(self.event['id'], run=self.queue())
+        refreshed = self.receipt.refresh()
+        self.assertEqual(refreshed['id'], self.event['id'])
+        self.assertEqual(refreshed['delivery'], 'accepted')
+        self.assertEqual(len(refreshed['attempts']), 1)
+
+    def test_changed_report_remains_unread_after_old_acknowledgment(self):
+        self.report.write_text('report B', encoding='utf-8')
+        second = self.receipt.refresh()
+        self.consume()
+        self.assertNotEqual(second['id'], self.event['id'])
+        self.assertEqual(Path(self.event['result']).read_text(), 'report A')
+        self.assertEqual(self.receipt.read()['events'][-1]['consumption'], 'unread')
+
+    def test_colliding_requested_paths_have_private_authoritative_reports(self):
+        other = Receipt.create('parent', 'codex', 'worker', str(self.root / 'shared.log'),
+                               str(self.root / 'shared.md'), 'fake-codex')
+        self.assertNotEqual(other.read()['report'], self.receipt.read()['report'])
+        self.assertEqual(other.observe('completed', 0)['availability'], 'missing')
+
+    def test_acknowledgment_requires_origin_launch_event_and_claim(self):
+        launch = self.receipt.read()['launch']
+        for origin, identity in [('wrong', launch), ('parent', 'wrong')]:
+            with self.assertRaises(ValueError):
+                self.receipt.claim(origin, identity, self.event['id'], 'handler')
+        with self.assertRaises(ValueError):
+            self.receipt.acknowledge('parent', launch, self.event['id'], 'handler', 'wrong', 'incorporated')
+        claim = self.receipt.claim('parent', launch, self.event['id'], 'handler')
+        with self.assertRaises(ValueError):
+            self.receipt.acknowledge('parent', launch, self.event['id'], 'handler', 'wrong', 'incorporated')
+        with self.assertRaises(ValueError):
+            self.receipt.claim('parent', launch, self.event['id'], 'other')
+        self.assertEqual(self.receipt.claim('parent', launch, self.event['id'], 'handler')['token'], claim['token'])
+
+    def test_concurrent_submission_keeps_one_attempt_and_allows_ack(self):
+        entered, finish = threading.Event(), threading.Event()
+        errors = []
+        def queue(*args, **kwargs):
+            entered.set()
+            if not finish.wait(5):
+                raise AssertionError('queue synchronization deadline')
+            return subprocess.CompletedProcess([], 0)
+        def sender():
+            try:
+                self.receipt.send(self.event['id'], run=queue)
+            except BaseException as exc:
+                errors.append(exc)
+        thread = threading.Thread(target=sender)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            other = self.queue()
+            self.assertEqual(self.receipt.send(self.event['id'], run=other), 1)
+            other.assert_not_called()
+            self.consume()
+        finally:
+            finish.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        event = self.receipt.read()['events'][-1]
+        self.assertEqual((event['delivery'], event['consumption']), ('accepted', 'consumed'))
+        self.assertEqual(len(event['attempts']), 1)
+
+    def test_interrupted_submission_remains_unknown_during_recovery(self):
+        state = self.receipt.read()
+        state['events'][-1].update(delivery='submitting', attempts=[{'id': 'interrupted', 'state': 'submitting'}])
+        self.receipt.save(state)
+        self.assertEqual(self.receipt.recover_delivery(), 1)
+        current = self.receipt.read()['events'][-1]
+        self.assertEqual(current['id'], self.event['id'])
+        self.assertEqual(current['delivery'], 'unknown')
+        self.assertEqual(len(current['attempts']), 1)
+
+    def test_missing_malformed_and_empty_reports_preserve_evidence(self):
+        self.report.unlink()
+        missing = self.receipt.refresh()
+        self.assertEqual(missing['availability'], 'missing')
+        self.report.write_text('{bad json', encoding='utf-8')
+        malformed = self.receipt.observe('completed', 0, report_format='claude-json')
+        self.assertEqual(malformed['availability'], 'malformed')
+        self.assertEqual(Path(malformed['result']).read_text(), '{bad json')
+        self.report.write_text('', encoding='utf-8')
+        self.assertEqual(self.receipt.refresh()['availability'], 'empty')
+
+    def test_timeout_never_retries_uncertain_queue_acceptance(self):
+        queue = unittest.mock.Mock(side_effect=subprocess.TimeoutExpired('queue', 30))
+        self.assertEqual(self.receipt.send(self.event['id'], run=queue), 1)
+        self.assertEqual(self.receipt.send(self.event['id'], run=queue), 1)
+        queue.assert_called_once()
+        self.assertEqual(self.receipt.read()['events'][-1]['delivery'], 'unknown')
+
+    def test_monitor_lock_prevents_competing_recovery(self):
+        with self.receipt.monitor():
+            with self.assertRaises(TimeoutError):
+                self.receipt.recover_monitor()
+
+    def test_process_death_releases_monitor_lock(self):
+        code = "import os,sys; from receipt import Receipt; r=Receipt(sys.argv[1]); lock=r.monitor(); lock.__enter__(); os._exit(0)"
+        result = subprocess.run([sys.executable, '-c', code, str(self.receipt.root)],
+                                cwd=str(SKILL_DIR), capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with self.receipt.monitor():
+            pass
+
+    def test_registry_errors_never_establish_worker_success(self):
+        self.receipt.update(runner='claude-writable', session='worker', claude_bin='fake-claude')
+        snapshots = iter(['[{"id":"worker","state":"working"}]', '{bad', '{bad', '{bad'])
+        def registry(cmd, **kwargs):
+            if cmd[1] == 'agents':
+                return subprocess.CompletedProcess(cmd, 0, stdout=next(snapshots))
+            return subprocess.CompletedProcess(cmd, 1, stdout=b'')
+        ticks = iter(range(100))
+        with unittest.mock.patch.object(watch_claude.subprocess, 'run', side_effect=registry), \
+             unittest.mock.patch.object(Receipt, 'deliver', return_value=0):
+            result = watch_claude.run_watcher('fake-claude', 'fake-codex', 'worker', 'worker',
+                                            'parent', str(self.report), 'attach', receipt=self.receipt,
+                                            env={}, clock=lambda: next(ticks), sleep=lambda _: None)
+        self.assertEqual(result, 1)
+        event = self.receipt.read()['events'][-1]
+        self.assertEqual((event['kind'], event['status']), ('monitoring-error', None))
+
+    def test_monitor_recovery_resumes_stopped_writable_observations(self):
+        cases = [('monitoring-error', '[{"id":"worker","state":"failed"}]', 'failed'),
+                 ('attention', '[{"id":"worker","state":"failed"}]', 'failed'),
+                 ('monitoring-error', '[]', 'unverified'),
+                 ('monitoring-error', '{bad', 'monitoring-error')]
+        for kind, snapshot, expected in cases:
+            with self.subTest(kind=kind, snapshot=snapshot):
+                self.receipt.update(runner='claude-writable', session='worker', claude_bin='fake-claude', registry_seen=True)
+                old = self.receipt.observe(kind, None)
+                self.receipt.send(old['id'], run=self.queue())
+                self.consume(old)
+                before = self.receipt.read()['events']
+                def registry(cmd, **kwargs):
+                    return subprocess.CompletedProcess(cmd, 0, stdout=snapshot if cmd[1] == 'agents' else b'logs')
+                ticks = iter(range(100))
+                watcher = watch_claude.run_watcher
+                def run_watcher(*args, **kwargs):
+                    return watcher(*args, **kwargs, env={}, clock=lambda: next(ticks), sleep=lambda _: None)
+                with unittest.mock.patch.object(watch_claude.subprocess, 'run', side_effect=registry) as calls, \
+                     unittest.mock.patch.object(watch_claude, 'run_watcher', side_effect=run_watcher), \
+                     unittest.mock.patch.object(Receipt, 'deliver', return_value=0), \
+                     unittest.mock.patch.object(dispatch.subprocess, 'Popen') as worker:
+                    event = self.receipt.recover_monitor()
+                self.assertEqual((event['kind'], event['status']), (expected, None))
+                if expected == kind:
+                    self.assertEqual(self.receipt.read()['events'], before)
+                    self.assertEqual(event['id'], old['id'])
+                else:
+                    self.assertEqual(self.receipt.read()['events'][:-1], before)
+                self.assertEqual(calls.call_args_list[0].args[0][1], 'agents')
+                worker.assert_not_called()
+
+    def test_malformed_registry_states_publish_bounded_diagnostics(self):
+        for field in ('state', 'status'):
+            for malformed in (['working'], {'value': 'working'}):
+                with self.subTest(field=field, malformed=malformed):
+                    snapshot = json.dumps([{'id': 'worker', field: malformed}])
+                    def registry(cmd, **kwargs):
+                        return subprocess.CompletedProcess(cmd, 0, stdout=snapshot if cmd[1] == 'agents' else b'diagnostic logs')
+                    ticks = iter(range(100))
+                    with unittest.mock.patch.object(watch_claude.subprocess, 'run', side_effect=registry) as calls, \
+                         unittest.mock.patch.object(Receipt, 'deliver', return_value=0) as deliver:
+                        status = watch_claude.run_watcher('fake-claude', 'fake-codex', 'worker', 'worker',
+                                                        'parent', str(self.report), 'attach', receipt=self.receipt,
+                                                        env={}, clock=lambda: next(ticks), sleep=lambda _: None)
+                    self.assertEqual(status, 1)
+                    event = self.receipt.read()['events'][-1]
+                    self.assertEqual((event['kind'], event['status']), ('monitoring-error', None))
+                    self.assertEqual(Path(event['diagnostic']).read_bytes(), b'diagnostic logs')
+                    self.assertEqual(sum(call.args[0][1] == 'agents' for call in calls.call_args_list), 3)
+                    deliver.assert_called_once_with(event['id'])
+
+    def test_actual_registry_disappearance_retains_unknown_status(self):
+        snapshots = iter(['[{"id":"worker","state":"working"}]', '[]'])
+        def registry(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, stdout=next(snapshots) if cmd[1] == 'agents' else b'logs')
+        ticks = iter(range(100))
+        with unittest.mock.patch.object(watch_claude.subprocess, 'run', side_effect=registry), \
+             unittest.mock.patch.object(Receipt, 'deliver', return_value=0):
+            watch_claude.run_watcher('fake-claude', 'fake-codex', 'worker', 'worker', 'parent',
+                                    str(self.report), 'attach', receipt=self.receipt, env={},
+                                    clock=lambda: next(ticks), sleep=lambda _: None)
+        event = self.receipt.read()['events'][-1]
+        self.assertEqual((event['kind'], event['status']), ('unverified', None))
+        self.assertTrue(self.receipt.read()['registry_seen'])
 
 
 if __name__ == "__main__":

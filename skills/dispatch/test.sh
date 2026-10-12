@@ -4,11 +4,23 @@ set -euo pipefail
 skill_dir="$(cd "$(dirname "$0")" && pwd)"
 tmp="$(mktemp -d -t dispatch-test.XXXXXX)"
 cleanup() {
-  if [ -n "${tmp:-}" ] && [ -d "$tmp" ]; then rm -rf -- "$tmp"; fi
+  if [ -n "${tmp:-}" ] && [ -d "$tmp" ]; then
+    # Windows retains a worker's current directory until its process exits.
+    local cleanup_deadline=$((SECONDS + 10))
+    while [ -d "$tmp/work" ] && ! rmdir "$tmp/work" 2>/dev/null; do
+      if [ "$SECONDS" -ge "$cleanup_deadline" ]; then
+        printf 'fixture workers still hold their directory\n' >&2
+        return 1
+      fi
+      sleep 0.05
+    done
+    rm -rf -- "$tmp"
+  fi
 }
 trap cleanup EXIT
 
 mkdir -p "$tmp/bin" "$tmp/work"
+export ARC_BIN="$tmp/bin/missing-arc"
 printf 'Finish the bounded test task.\n' > "$tmp/prompt.md"
 
 cat > "$tmp/bin/codex" <<'STUB'
@@ -16,6 +28,7 @@ cat > "$tmp/bin/codex" <<'STUB'
 set -euo pipefail
 case "${1:-}" in
   exec)
+    if [ -n "${DISPATCH_TEST_CODEX_ARGS:-}" ]; then printf '%s\n' "$@" > "$DISPATCH_TEST_CODEX_ARGS"; fi
     shift
     result=""
     while [ $# -gt 0 ]; do
@@ -167,7 +180,36 @@ stub_terminal_launcher() {
 
 export CODEX_BIN="$tmp/bin/codex"
 export CLAUDE_BIN="$tmp/bin/claude"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    printf '@"%s" "%s" %%*\r\n' "$(cygpath -w "$(command -v bash)")" "$(cygpath -w "$tmp/bin/codex")" > "$tmp/bin/codex.cmd"
+    printf '@"%s" "%s" %%*\r\n' "$(cygpath -w "$(command -v bash)")" "$(cygpath -w "$tmp/bin/claude")" > "$tmp/bin/claude.cmd"
+    export CODEX_BIN="$(cygpath -w "$tmp/bin/codex.cmd")"
+    export CLAUDE_BIN="$(cygpath -w "$tmp/bin/claude.cmd")"
+    ;;
+esac
 export DISPATCH_TEST_CLAUDE_ARGS="$tmp/claude-args.log"
+
+mkdir -p "$tmp/codex-home"
+for provider in openai amazon-bedrock; do
+  printf 'model_provider = "%s"\n\n[model_providers.amazon-bedrock]\nmodel_provider = "amazon-bedrock"\n' "$provider" > "$tmp/codex-home/config.toml"
+  for mapping in sol:gpt-6.1-sol sol6:gpt-6-sol gpt-6.1-sol:gpt-6.1-sol gpt-6-sol:gpt-6-sol gpt-5.6-sol:gpt-5.6-sol openai.gpt-6-sol:openai.gpt-6-sol; do
+    model="${mapping%%:*}"
+    expected="${mapping#*:}"
+    if [ "$provider" = amazon-bedrock ] && [[ "$expected" == gpt-* ]]; then expected="openai.$expected"; fi
+    args_file="$tmp/model-$provider-$model.args"
+    queue_file="$tmp/model-$provider-$model.queue"
+    CODEX_HOME="$tmp/codex-home" DISPATCH_TEST_CODEX_ARGS="$args_file" DISPATCH_TEST_QUEUE_LOG="$queue_file" \
+      bash "$skill_dir/dispatch.sh" --runner codex --model "$model" --prompt "$tmp/prompt.md" --cwd "$tmp/work" \
+      --log "$tmp/model-$provider-$model.log" --notify-thread model-test >/dev/null
+    wait_for_queue "$queue_file"
+    actual="$(awk '$0 == "-m" { getline; print; exit }' "$args_file")"
+    if [ "$actual" != "$expected" ]; then
+      printf 'Codex model %s on %s resolved to %s instead of %s\n' "$model" "$provider" "$actual" "$expected" >&2
+      exit 1
+    fi
+  done
+done
 
 default_record="$(bash "$skill_dir/dispatch.sh" --runner claude --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
 default_mode="$(awk '$0 == "--permission-mode" { getline; print; exit }' "$DISPATCH_TEST_CLAUDE_ARGS")"
@@ -228,6 +270,17 @@ if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$no_python_out" >/dev/null; then
   printf 'launch without python3 printed an Arc receipt\n' >&2; exit 1
 fi
 grep -F -- 'no python3 on PATH: this launch has no Arc receipt' "$tmp/arc-no-python.err" >/dev/null
+
+# Callback refusal must precede either worker launch.
+for callback_runner in claude codex; do
+  rm -f -- "$DISPATCH_TEST_CLAUDE_ARGS" "$tmp/callback-codex-args"
+  if PATH="$tmp/no-python:$PATH" DISPATCH_TEST_CODEX_ARGS="$tmp/callback-codex-args" bash "$skill_dir/dispatch.sh" --runner "$callback_runner" --prompt "$tmp/prompt.md" --cwd "$tmp/work" --notify-thread fixture-parent >"$tmp/refused.out" 2>"$tmp/refused.err"; then
+    printf 'unsupported callback launch succeeded\n' >&2
+    exit 1
+  fi
+  [ ! -e "$DISPATCH_TEST_CLAUDE_ARGS" ] && [ ! -e "$tmp/callback-codex-args" ] || { printf 'worker started before callback refusal\n' >&2; exit 1; }
+  grep -F 'callback delivery requires Python 3.10' "$tmp/refused.err" >/dev/null
+done
 
 # The detached read-only branch never chooses a session id or a receipt without python3,
 # unlike the writable case above, which only loses the receipt.
@@ -338,17 +391,17 @@ override_mode="$(awk '$0 == "--permission-mode" { getline; print; exit }' "$DISP
 grep -F -- 'id: claude-test' <<< "$override_record" >/dev/null
 
 export DISPATCH_TEST_QUEUE_LOG="$tmp/queue.log"
-export DISPATCH_TEST_EXPECT_RESULT="$tmp/run.last.md"
+export DISPATCH_TEST_EXPECT_RESULT=""
 record="$(bash "$skill_dir/dispatch.sh" --runner codex --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/run.log" --notify-thread origin-123)"
 wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
 [ "$(wc -l < "$DISPATCH_TEST_QUEUE_LOG")" -eq 1 ]
 grep -F -- '--thread origin-123 --message Fresh-session handoff dispatch-' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
 grep -F -- 'completed (exit 0). Result:' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
 grep -F -- "notify-thread: origin-123" <<< "$record" >/dev/null
-grep -F -- "notify-log: $tmp/run.notify.log" <<< "$record" >/dev/null
+grep -F -- "monitor.log" <<< "$record" >/dev/null
 
 export DISPATCH_TEST_QUEUE_LOG="$tmp/failure-queue.log"
-export DISPATCH_TEST_EXPECT_RESULT="$tmp/failure.last.md"
+export DISPATCH_TEST_EXPECT_RESULT=""
 export DISPATCH_TEST_EXEC_STATUS=7
 failure_record="$(bash "$skill_dir/dispatch.sh" --runner codex --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/failure.log" --notify-thread origin-456)"
 wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
@@ -371,9 +424,9 @@ claude_record="$(bash "$skill_dir/dispatch.sh" --runner claude --prompt "$tmp/pr
 wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
 [ "$(wc -l < "$DISPATCH_TEST_QUEUE_LOG")" -eq 1 ]
 grep -F -- '--thread origin-789 --message Fresh-session handoff dispatch-' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
-grep -F -- 'completed. Result: claude logs claude-test' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
+grep -F -- 'unverified (exit unknown). Result:' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
 grep -F -- 'notify-thread: origin-789' <<< "$claude_record" >/dev/null
-grep -F -- "$tmp/claude-complete.notify.log" <<< "$claude_record" >/dev/null
+grep -F -- "monitor.log" <<< "$claude_record" >/dev/null
 grep -F -- 'monitor-pid:' <<< "$claude_record" >/dev/null
 
 rm -f -- "$DISPATCH_TEST_CLAUDE_STATE_FILE"
@@ -382,14 +435,14 @@ export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-blocked-queue.log"
 blocked_record="$(bash "$skill_dir/dispatch.sh" --runner claude --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/claude-blocked.log" --notify-thread origin-790)"
 wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
 [ "$(wc -l < "$DISPATCH_TEST_QUEUE_LOG")" -eq 1 ]
-grep -F -- 'requires attention (Claude state blocked)' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
+grep -F -- 'attention (exit unknown)' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
 grep -F -- 'notify-thread: origin-790' <<< "$blocked_record" >/dev/null
 
 rm -f -- "$DISPATCH_TEST_CLAUDE_STATE_FILE"
 export DISPATCH_TEST_CLAUDE_SEQUENCE=multi_agent
 export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-multi-agent-queue.log"
 bash "$skill_dir/watch-claude.sh" "$CLAUDE_BIN" "$CODEX_BIN" claude-test multi-agent origin-792 'claude logs claude-test' 'claude attach claude-test'
-assert_single_notice "$DISPATCH_TEST_QUEUE_LOG" 'completed. Result: claude logs claude-test'
+assert_single_notice "$DISPATCH_TEST_QUEUE_LOG" 'unverified (exit unknown). Result:'
 
 rm -f -- "$DISPATCH_TEST_CLAUDE_STATE_FILE"
 export DISPATCH_TEST_CLAUDE_SEQUENCE=registry_error
@@ -430,8 +483,8 @@ fi
 assert_single_notice "$DISPATCH_TEST_QUEUE_LOG" 'monitor timed out after 2 seconds'
 
 export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-read-only-queue.log"
-export DISPATCH_TEST_EXPECT_RESULT="$tmp/claude-read-only.log"
-read_only_record="$(bash "$skill_dir/dispatch.sh" --runner claude --read-only --read-tool mcp__tickets__get_ticket --read-tool mcp__tickets__list_comments --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$DISPATCH_TEST_EXPECT_RESULT" --notify-thread origin-791)"
+export DISPATCH_TEST_EXPECT_RESULT=""
+read_only_record="$(bash "$skill_dir/dispatch.sh" --runner claude --read-only --read-tool mcp__tickets__get_ticket --read-tool mcp__tickets__list_comments --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/claude-read-only.log" --notify-thread origin-791)"
 wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
 [ "$(wc -l < "$DISPATCH_TEST_QUEUE_LOG")" -eq 1 ]
 grep -F -- 'completed (exit 0)' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
@@ -466,8 +519,9 @@ if grep -Fx -- '--setting-sources' "$DISPATCH_TEST_CLAUDE_ARGS" >/dev/null; then
   exit 1
 fi
 
-# With no MCP read, the launch loads no settings, so no allow rule can approve a write,
-# and a reviewer keeps read-only shell commands such as git log.
+# With no MCP read, the launch loads no settings and no MCP servers, so no allow rule can
+# approve a write, and a reviewer runs Bash under auto mode with the edit tools and the
+# git commands that change refs or the working tree denied.
 rm -f "$DISPATCH_TEST_CLAUDE_ARGS"
 bash "$skill_dir/dispatch.sh" --runner claude --read-only --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/claude-read-only-plain.log" >/dev/null
 for _ in $(seq 1 100); do [ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] && break; sleep 0.1; done
@@ -476,9 +530,49 @@ if [ "$(awk '$0 == "--setting-sources" { getline; print "[" $0 "]"; exit }' "$DI
   printf 'Claude read-only launch loads settings whose allow rules can approve a write\n' >&2
   exit 1
 fi
+grep -Fx -- '--strict-mcp-config' "$DISPATCH_TEST_CLAUDE_ARGS" >/dev/null || { printf 'Claude read-only launch loads MCP servers whose tools auto mode would judge\n' >&2; exit 1; }
+expect_value --permission-mode auto
 reject_value --disallowedTools Bash
-expect_value --disallowedTools PowerShell
-expect_value --disallowedTools Edit
+reject_value --allowedTools Bash
+for tool in PowerShell Edit Write NotebookEdit MultiEdit 'Bash(git commit *)' 'Bash(git -C * push *)' 'Bash(git -C * stash)' 'Bash(git stash)' 'Bash(git fetch *)' 'Bash(git branch *)' 'Bash(git worktree remove *)' 'Bash(git * --output*)'; do
+  expect_value --disallowedTools "$tool"
+done
+reject_value --disallowedTools 'Bash(git branch)'
+# dispatch.sh builds its git deny rules from its own copy of dispatch.py's lists, so a verb
+# added to one launcher alone would leave the other launcher's reviewers free to run it.
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import dispatch; print(*dispatch.READONLY_GIT_DENY, sep=chr(10))' "$skill_dir" | tr -d '\r' | sort >"$tmp/git-deny-py"
+flag_values --disallowedTools | grep '^Bash(git ' | sort >"$tmp/git-deny-sh"
+if ! diff "$tmp/git-deny-py" "$tmp/git-deny-sh" >&2; then
+  printf 'dispatch.sh and dispatch.py deny different git commands to a read-only Claude session\n' >&2
+  exit 1
+fi
+
+# Claude Code starts a model without auto mode in manual mode, where a session with no
+# permission prompts loses every Bash command it does not classify as read-only. The launch
+# runs such a model in dontAsk, with the same denials, and says why.
+for model_mode in claude-haiku-4-5-20251001:dontAsk claude-opus-4-5-20251101:dontAsk claude-sonnet-4-20250514:dontAsk claude-opus-4-6:auto claude-sonnet-5-5:auto sonnet:auto haiku:auto claude-haiku-5-5:auto 'claude-haiku-5-5[1m]:auto'; do
+  rm -f "$DISPATCH_TEST_CLAUDE_ARGS"
+  bash "$skill_dir/dispatch.sh" --runner claude --read-only --model "${model_mode%%:*}" --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/claude-read-only-model.log" >/dev/null 2>"$tmp/claude-read-only-model.err"
+  for _ in $(seq 1 100); do [ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] && break; sleep 0.1; done
+  expect_value --permission-mode "${model_mode##*:}"
+  expected_model="${model_mode%%:*}"
+  if [ "$expected_model" = haiku ]; then expected_model=claude-haiku-5-5; fi
+  expect_value --model "$expected_model"
+  expect_value --disallowedTools 'Bash(git stash)'
+  reject_value --disallowedTools Bash
+  if [ "${model_mode##*:}" = dontAsk ] && ! grep -F -- "${model_mode%%:*} has no auto mode" "$tmp/claude-read-only-model.err" >/dev/null; then
+    printf 'Claude read-only launch of %s narrowed Bash without saying so\n' "${model_mode%%:*}" >&2
+    exit 1
+  fi
+done
+
+for model in haiku claude-haiku-5-5 claude-haiku-4-5-20251001 sonnet; do
+  bash "$skill_dir/dispatch.sh" --runner claude --model "$model" --prompt "$tmp/prompt.md" --cwd "$tmp/work" >"$tmp/claude-model.out"
+  expected_model="$model"
+  if [ "$expected_model" = haiku ]; then expected_model=claude-haiku-5-5; fi
+  expect_value --model "$expected_model"
+  grep -Fx -- "model: $expected_model" "$tmp/claude-model.out" >/dev/null
+done
 
 if bash "$skill_dir/dispatch.sh" --runner claude --read-only --permission-mode auto --prompt "$tmp/prompt.md" --cwd "$tmp/work" >"$tmp/read-only-override.out" 2>&1; then
   printf 'Claude read-only permission override unexpectedly succeeded\n' >&2

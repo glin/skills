@@ -45,6 +45,7 @@ import os
 import platform
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import watch_claude
+from receipt import Receipt, cli_command
+from contextlib import nullcontext
 
 SKILL_DIR = Path(__file__).resolve().parent
 
@@ -61,7 +64,7 @@ SKILL_DIR = Path(__file__).resolve().parent
 # as a literal and the request fails with a 400. Resolve the OpenAI shorthands here.
 # Amazon Bedrock uses an "openai." prefix for these models.
 CODEX_MODEL_SHORTHANDS = {
-    "sol": "gpt-6-sol",
+    "sol": "gpt-6.1-sol",
     "sol6": "gpt-6-sol",
     "terra": "gpt-5.6-terra",
     "luna": "gpt-6-luna",
@@ -79,6 +82,58 @@ READONLY_CLAUDE_DENY = [
     "PushNotification", "RemoteTrigger", "ScheduleWakeup", "SendMessage",
     "ShareOnboardingGuide", "TaskStop",
 ]
+# A read-only Claude session runs Bash under auto mode, whose classifier judges each
+# command and can approve a write. Deny rules stop the git commands that write refs,
+# config, the index, the working tree or the object store before the classifier sees them.
+# A Bash rule matches the command text after Claude Code splits compound commands. Each
+# verb gets a bare and an argument form, plain and after git -C, so a bare git stash is
+# denied whether or not a trailing wildcard matches a command with no arguments. Some verbs also read, such as git stash list or git config --get, but no rule can
+# tell those forms from the writes, so the whole verb is denied. dispatch.sh carries the
+# same lists, and test.sh holds the two rule sets equal.
+READONLY_GIT_DENY_VERBS = [
+    "add", "am", "apply", "archive", "bisect", "bundle", "checkout", "checkout-index",
+    "cherry-pick", "clean", "clone", "commit", "commit-tree", "config", "credential",
+    "fast-import", "fetch", "filter-branch", "format-patch", "gc", "hash-object", "init",
+    "maintenance", "merge", "merge-file", "mergetool", "mktag", "mktree", "mv", "pack-refs",
+    "prune", "pull", "push", "read-tree", "rebase", "reflog delete", "reflog expire", "repack",
+    "replace", "rerere", "reset", "restore", "revert", "rm", "sparse-checkout", "stash",
+    "submodule", "switch", "symbolic-ref", "update-index", "update-ref", "worktree add",
+    "worktree lock", "worktree move", "worktree prune", "worktree remove", "worktree repair",
+    "worktree unlock", "write-tree",
+]
+# Bare, these verbs list. With arguments they can create, rename or delete, and a branch,
+# tag or remote name can be any word, so their rules name only the forms with arguments.
+READONLY_GIT_DENY_WITH_ARGS = ["branch", "notes", "remote", "tag"]
+READONLY_GIT_DENY = [
+    *(rule for verb in READONLY_GIT_DENY_VERBS
+      for rule in (f"Bash(git {verb})", f"Bash(git {verb} *)",
+                   f"Bash(git -C * {verb})", f"Bash(git -C * {verb} *)")),
+    *(rule for verb in READONLY_GIT_DENY_WITH_ARGS
+      for rule in (f"Bash(git {verb} *)", f"Bash(git -C * {verb} *)")),
+    # git diff, git log and git show write their output to a file with --output.
+    "Bash(git * --output*)",
+]
+
+
+def claude_model_has_auto_mode(model):
+    """Return whether Claude Code runs this model in auto mode. It starts a model older
+    than Opus 4.6 in manual mode, whatever --permission-mode says: every Claude 3 and
+    Haiku model before 5.5, and Opus or Sonnet 4, 4.1 and 4.5. An unnamed model is the account
+    default, which supports auto mode. dispatch.sh carries the same test."""
+    if not model:
+        return True
+    name = model.lower()
+    if name == "haiku" or re.search(r"haiku-5-5(?:$|[-.\[:])", name):
+        return True
+    if "haiku" in name or "claude-3" in name:
+        return False
+    match = re.search(r"(?:opus|sonnet)-4(?:[-.]([0-9]+))?", name)
+    if not match:
+        return True
+    minor = match.group(1)
+    # An eight-digit suffix is a release date, as in claude-sonnet-4-20250514.
+    return minor is not None and len(minor) < 8 and int(minor) >= 6
+
 
 # A dispatched Claude session writes its prompt cache at the 5-minute lifetime. On a
 # subscription, Claude Code defaults the main conversation to 1 hour, and a 1-hour write
@@ -137,6 +192,8 @@ def add_dir_flags(dirs):
 def resolve_bin(env_var, default_name):
     override = os.environ.get(env_var)
     candidate = override if override else default_name
+    if override and len(cli_command([candidate])) > 1:
+        return str(Path(candidate).resolve())
     return shutil.which(candidate)
 
 
@@ -205,6 +262,24 @@ def worktree_home(path):
         return path
     common = out.stdout.strip()
     return os.path.dirname(common) if common else path
+
+
+REMOVE_WORKTREE = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "references", "scripts", "remove-worktree.py"))
+
+
+def remove_command(agent_id, home, name):
+    """Return the command that removes a finished session.
+
+    A session with a worktree has its tree removed by the removal script, which never
+    follows a dependency link. `claude rm` then deletes only the session record, and runs
+    only once the tree is gone, because the script keeps a dirty or locked tree."""
+    record = f"claude rm {shlex.quote(agent_id)}"
+    if home is None:
+        return record
+    tree = os.path.join(home, ".claude", "worktrees", name)
+    return (f"python3 {shlex.quote(REMOVE_WORKTREE)} --repository {shlex.quote(home)} {shlex.quote(tree)}"
+            f" && [ ! -e {shlex.quote(tree)} ] && {record}")
 
 
 def git_commit_of(path, ref):
@@ -363,16 +438,18 @@ def _resolve_worker_pid(wrapper_pid, target=None, timeout=3.0):
     return wrapper_pid
 
 
-def _spawn_watch_claude(claude_bin, codex_bin, agent_id, name, thread, result, attach, notify_log_path):
+def _spawn_watch_claude(claude_bin, codex_bin, agent_id, name, thread, result, attach, notify_log_path, receipt_path=None):
     watch_script = str(SKILL_DIR / "watch_claude.py")
     cmd = [sys.executable, watch_script, claude_bin, codex_bin, agent_id, name, thread, result, attach]
+    if receipt_path:
+        cmd.append(receipt_path)
     log_fh = open(notify_log_path, "wb")
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log_fh, stderr=subprocess.STDOUT, **_detach_kwargs())
     log_fh.close()
     return proc.pid
 
 
-def _codex_pump(cmd, cwd, prompt_path, log_path, id_file_path, result_path, notify_thread, notify_log_path, name, codex_bin, pid_file_path=None):
+def _codex_pump(cmd, cwd, prompt_path, log_path, id_file_path, result_path, notify_thread, notify_log_path, name, codex_bin, pid_file_path=None, receipt_path=None):
     """Run codex to completion, teeing its --json stdout to the log file and capturing
     the thread.started id as soon as it appears. Blocks until the worker exits."""
     thread_id = None
@@ -401,14 +478,26 @@ def _codex_pump(cmd, cwd, prompt_path, log_path, id_file_path, result_path, noti
                                 idf.write(thread_id or "")
         proc.stdout.close()
         status = proc.wait()
+        if id_file_path:
+            with open(id_file_path + ".status.tmp", "w", encoding="utf-8") as status_file:
+                status_file.write(str(status))
+            os.replace(id_file_path + ".status.tmp", id_file_path + ".status")
     if notify_thread:
         state = "completed" if status == 0 else "failed"
-        message = f"Fresh-session handoff {name} {state} (exit {status}). Result: {result_path}"
-        watch_claude.send_notice(codex_bin, notify_thread, message, notify_log_path)
+        if receipt_path:
+            receipt = Receipt(receipt_path)
+            receipt.update(session=thread_id)
+            event = receipt.observe(state, status)
+            delivery = receipt.deliver(event['id'])
+        else:
+            message = f"Fresh-session handoff {name} {state} (exit {status}). Result: {result_path}"
+            delivery = watch_claude.send_notice(codex_bin, notify_thread, message, notify_log_path)
+        if delivery and status == 0:
+            status = 1
     return thread_id, status
 
 
-def _claude_readonly_pump(cmd, cwd, prompt_path, log_path, result_path, notify_thread, notify_log_path, name, codex_bin, pid_file_path=None, id_file_path=None, expected_session_id=None):
+def _claude_readonly_pump(cmd, cwd, prompt_path, log_path, result_path, notify_thread, notify_log_path, name, codex_bin, pid_file_path=None, id_file_path=None, expected_session_id=None, receipt_path=None):
     with open(prompt_path, "rb") as prompt_fh, open(log_path, "wb") as log_fh:
         proc = subprocess.Popen(cmd, cwd=cwd, stdin=prompt_fh, stdout=log_fh, stderr=subprocess.STDOUT)
         if pid_file_path:
@@ -435,8 +524,16 @@ def _claude_readonly_pump(cmd, cwd, prompt_path, log_path, result_path, notify_t
         status = proc.wait()
     if notify_thread:
         state = "completed" if status == 0 else "failed"
-        message = f"Fresh-session handoff {name} {state} (exit {status}). Result: {result_path}"
-        watch_claude.send_notice(codex_bin, notify_thread, message, notify_log_path)
+        if receipt_path:
+            receipt = Receipt(receipt_path)
+            receipt.update(session=_extract_claude_session_id(log_path))
+            event = receipt.observe(state, status, report_format='claude-json')
+            delivery = receipt.deliver(event['id'])
+        else:
+            message = f"Fresh-session handoff {name} {state} (exit {status}). Result: {result_path}"
+            delivery = watch_claude.send_notice(codex_bin, notify_thread, message, notify_log_path)
+        if delivery and status == 0:
+            status = 1
     return status
 
 
@@ -522,20 +619,26 @@ def _spawn_supervisor(params, id_file_path=None, pid_file_path=None, wait_second
 def _run_internal_supervise(params_path):
     with open(params_path, "r", encoding="utf-8") as fh:
         params = json.load(fh)
+    receipt = Receipt(params['receipt_path']) if params.get('receipt_path') else None
+    with receipt.monitor() if receipt else nullcontext():
+        return _supervise_locked(params, params_path)
+
+
+def _supervise_locked(params, params_path):
     try:
         if params["kind"] == "codex":
             _thread_id, status = _codex_pump(
                 params["cmd"], params["cwd"], params["prompt_path"], params["log_path"],
                 params.get("id_file_path"), params["result_path"], params.get("notify_thread"),
                 params.get("notify_log_path"), params["name"], params["codex_bin"],
-                pid_file_path=params.get("pid_file_path"),
+                pid_file_path=params.get("pid_file_path"), receipt_path=params.get("receipt_path"),
             )
         else:
             status = _claude_readonly_pump(
                 params["cmd"], params["cwd"], params["prompt_path"], params["log_path"],
                 params["result_path"], params.get("notify_thread"), params.get("notify_log_path"),
                 params["name"], params["codex_bin"],
-                pid_file_path=params.get("pid_file_path"),
+                pid_file_path=params.get("pid_file_path"), receipt_path=params.get("receipt_path"),
                 id_file_path=params.get("id_file_path"), expected_session_id=params.get("expected_session_id"),
             )
     finally:
@@ -566,8 +669,8 @@ def _extract_claude_session_id(log_path):
     return None
 
 
-def _print_arc_receipt(session_id, name, owned=False):
-    receipt = {"agent": "claude", "session_id": session_id, "name": name}
+def _print_arc_receipt(session_id, name, owned=False, agent="claude"):
+    receipt = {"agent": agent, "session_id": session_id, "name": name}
     if owned:
         receipt["owned"] = True
     print("ARC_DISPATCH_SESSION=" + json.dumps(receipt, separators=(",", ":")))
@@ -576,7 +679,7 @@ def _print_arc_receipt(session_id, name, owned=False):
 def uuid_is_full(value):
     try:
         return str(uuid.UUID(value)) == value.lower()
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError):
         return False
 
 
@@ -612,6 +715,7 @@ def _print_wait_result(result_path):
     if len(text) > WAIT_RESULT_CHAR_CAP:
         print(f"the result at {result_path} is {size} bytes, above the {WAIT_RESULT_CHAR_CAP:,} character cap")
         return
+    text = re.sub(r"(?m)^ARC_DISPATCH_SESSION=", "worker: ARC_DISPATCH_SESSION=", text)
     print(text, end="" if text.endswith("\n") else "\n")
 
 
@@ -624,6 +728,7 @@ class Context:
     notify_log: str
     claude_bin: str | None
     codex_bin: str | None
+    receipt_path: str | None = None
 
 
 def do_claude_read_only(args, ctx):
@@ -634,18 +739,29 @@ def do_claude_read_only(args, ctx):
             die(f"--read-tool must name one exact MCP tool, such as mcp__server__get_item: {tool}")
         readonly_tools.append(tool)
 
-    cli_args = ["-p", "--permission-mode", "dontAsk", "--permission-prompts", "none"]
-    # An allow rule in any settings file outranks dontAsk, so a rule such as
-    # Bash(python -c *) would let a reviewer write. With no settings loaded, dontAsk runs
-    # only Bash commands Claude Code classifies as read-only. An MCP read needs the
-    # settings that configure its server, so that run keeps them and loses both shells.
+    # An allow rule in a settings file skips both dontAsk and the auto mode classifier, so a
+    # rule such as Bash(npm run build *) would let a reviewer write. An MCP read needs the
+    # settings that configure its server, so that run keeps them, stays in dontAsk, which
+    # denies every unlisted MCP tool, and loses both shells. Every other run loads no
+    # settings and no MCP servers, and runs Bash under auto mode: its classifier judges
+    # each command, and the deny rules stop the edit tools and the git commands that write.
+    # Claude Code starts a model without auto mode in manual mode, and with no permission
+    # prompts that session loses every Bash command it does not classify as read-only. So
+    # such a model runs in dontAsk, with the same reach, and the launch says so.
     if args.read_tool:
-        shell_denials = ["Bash", "PowerShell"]
+        cli_args = ["-p", "--permission-mode", "dontAsk", "--permission-prompts", "none"]
+        denials = ["Bash", "PowerShell", *READONLY_CLAUDE_DENY]
     else:
-        cli_args += ["--setting-sources", ""]
-        shell_denials = ["PowerShell"]
+        mode = "auto" if claude_model_has_auto_mode(args.model) else "dontAsk"
+        if mode == "dontAsk":
+            print(f"{args.model} has no auto mode, so this read-only session runs one plain read "
+                  f"command at a time. Pipes, chains and git -C are denied. Choose a model with "
+                  f"auto mode, such as sonnet, for a review that needs them.", file=sys.stderr)
+        cli_args = ["-p", "--permission-mode", mode, "--permission-prompts", "none"]
+        cli_args += ["--setting-sources", "", "--strict-mcp-config"]
+        denials = ["PowerShell", *READONLY_CLAUDE_DENY, *READONLY_GIT_DENY]
     cli_args += ["--allowedTools", *readonly_tools]
-    cli_args += ["--disallowedTools", *shell_denials, *READONLY_CLAUDE_DENY]
+    cli_args += ["--disallowedTools", *denials]
     cli_args += ["--output-format", "json"]
     # A waited run takes its id from the JSON result instead, so it never needs one chosen
     # up front. Every other read-only run does, because it must print a receipt for a
@@ -657,7 +773,7 @@ def do_claude_read_only(args, ctx):
         cli_args += ["--model", args.model]
     if args.effort:
         cli_args += ["--effort", args.effort]
-    cmd = [ctx.claude_bin, *cli_args, *add_dir_flags(args.add_dir)]
+    cmd = cli_command([ctx.claude_bin, *cli_args, *add_dir_flags(args.add_dir)])
 
     if args.wait:
         status = _claude_readonly_pump(cmd, ctx.cwd, ctx.prompt_path, ctx.log, ctx.log, None, None, ctx.name, ctx.codex_bin)
@@ -679,6 +795,7 @@ def do_claude_read_only(args, ctx):
         "kind": "claude_readonly", "cmd": cmd, "cwd": ctx.cwd, "prompt_path": ctx.prompt_path,
         "log_path": ctx.log, "result_path": ctx.log, "notify_thread": args.notify_thread,
         "notify_log_path": ctx.notify_log, "name": ctx.name, "codex_bin": ctx.codex_bin,
+        "receipt_path": ctx.receipt_path,
         "expected_session_id": chosen_session_id,
     }
     pid_file_path = ctx.log + ".pid"
@@ -723,7 +840,7 @@ def do_claude_writable(args, ctx):
         cli_args += ["--model", args.model]
     if args.effort:
         cli_args += ["--effort", args.effort]
-    cmd = [ctx.claude_bin, *cli_args, *add_dir_flags(args.add_dir)]
+    cmd = cli_command([ctx.claude_bin, *cli_args, *add_dir_flags(args.add_dir)])
 
     with open(ctx.prompt_path, "rb") as prompt_fh:
         proc = subprocess.run(cmd, cwd=ctx.cwd, stdin=prompt_fh, capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -775,16 +892,17 @@ def do_claude_writable(args, ctx):
         print(f"tree: {ctx.cwd}")
     print(f"model: {args.model or 'default'}")
     print(f"prompt: {ctx.prompt_path}")
-    print(f"log: claude logs {agent_id}")
-    print(f"result: claude logs {agent_id}")
+    print(f"log: {ctx.log if ctx.receipt_path else 'claude logs ' + agent_id}")
+    print(f"result: {Receipt(ctx.receipt_path).read()['report'] if ctx.receipt_path else 'claude logs ' + agent_id}")
     print(f"watch: claude logs {agent_id}")
     print(f"attach: claude attach {agent_id}")
     print(f"stop: claude stop {agent_id}")
-    print(f"remove: claude rm {agent_id}")
+    print(f"remove: {remove_command(agent_id, worktree_home(ctx.cwd) if args.worktree else None, ctx.name)}")
     if args.notify_thread:
+        Receipt(ctx.receipt_path).update(session=agent_id, claude_bin=ctx.claude_bin)
         pid = _spawn_watch_claude(
             ctx.claude_bin, ctx.codex_bin, agent_id, ctx.name, args.notify_thread,
-            f"claude logs {agent_id}", f"claude attach {agent_id}", ctx.notify_log,
+            f"claude logs {agent_id}", f"claude attach {agent_id}", ctx.notify_log, ctx.receipt_path,
         )
         print(f"notify-thread: {args.notify_thread}")
         print(f"notify-log: {ctx.notify_log}")
@@ -806,7 +924,7 @@ def do_codex(args, ctx):
         sandbox = "read-only"
     if args.full_access:
         sandbox = "danger-full-access"
-    last = strip_ext(ctx.log) + ".last.md"
+    last = Receipt(ctx.receipt_path).read()["report"] if ctx.receipt_path else strip_ext(ctx.log) + ".last.md"
 
     if args.attach:
         window_args = ["-C", ctx.cwd]
@@ -840,7 +958,7 @@ def do_codex(args, ctx):
     if args.effort:
         cli_args += ["-c", f"model_reasoning_effort={args.effort}"]
     cli_args += add_dir_flags(args.add_dir)
-    cmd = [ctx.codex_bin, *cli_args]
+    cmd = cli_command([ctx.codex_bin, *cli_args])
 
     mode_word = "writable"
     if args.read_only:
@@ -857,6 +975,8 @@ def do_codex(args, ctx):
         print(f"result: {last}")
         print(f"session: {thread_id or 'unknown'}")
         _print_wait_result(last)
+        if status == 0 and uuid_is_full(thread_id):
+            _print_arc_receipt(thread_id, ctx.name, args.owned, "codex")
         raise SystemExit(status)
 
     id_file_path = ctx.log + ".id"
@@ -865,7 +985,12 @@ def do_codex(args, ctx):
         "kind": "codex", "cmd": cmd, "cwd": ctx.cwd, "prompt_path": ctx.prompt_path, "log_path": ctx.log,
         "id_file_path": id_file_path, "result_path": last, "notify_thread": args.notify_thread,
         "notify_log_path": ctx.notify_log, "name": ctx.name, "codex_bin": ctx.codex_bin,
+        "receipt_path": ctx.receipt_path,
     }
+    try:
+        os.remove(id_file_path + ".status")
+    except OSError:
+        pass
     pid, thread_id = _spawn_supervisor(params, id_file_path=id_file_path, pid_file_path=pid_file_path)
     try:
         os.remove(id_file_path)
@@ -887,6 +1012,22 @@ def do_codex(args, ctx):
     if args.notify_thread:
         print(f"notify-thread: {args.notify_thread}")
         print(f"notify-log: {ctx.notify_log}")
+
+    if uuid_is_full(thread_id):
+        deadline = time.monotonic() + STILL_RUNNING_POLL_SECONDS
+        status_path = id_file_path + ".status"
+        while not os.path.exists(status_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        launch_status = None
+        if os.path.exists(status_path):
+            with open(status_path, encoding="utf-8") as status_file:
+                launch_status = status_file.read().strip()
+        if launch_status is None or launch_status == "0":
+            _print_arc_receipt(thread_id, ctx.name, args.owned, "codex")
+        try:
+            os.remove(status_path)
+        except OSError:
+            pass
 
 
 def build_parser():
@@ -933,7 +1074,7 @@ def build_parser():
     )
     p.add_argument(
         "--read-only", action="store_true",
-        help="run a read-only analysis session with no permission prompts and no file changes",
+        help="run an analysis session with no permission prompts: Codex in its read-only sandbox, Claude with the edit tools and git writes denied",
     )
     p.add_argument(
         "--full-access", action="store_true",
@@ -963,9 +1104,166 @@ def build_parser():
     # flag, so args.arc_dispatch itself has no effect on any launch.
     p.add_argument(
         "--arc-dispatch", action="store_true",
-        help="the marker Arc reads from a command's own text. Every Claude launch prints its receipt whether or not this flag is set",
+        help="the marker Arc reads from a command's own text. Every identified supported launch prints its receipt whether or not this flag is set",
     )
     return p
+
+
+def arc_command(arc_bin):
+    """Invoke published Windows Arc entry points without cmd.exe argument parsing."""
+    command = cli_command([arc_bin])
+    if os.name != "nt" or len(command) > 1 or Path(arc_bin).suffix.lower() not in (".cmd", ".bat"):
+        return command
+    launcher = Path(arc_bin)
+    if launcher.stem.lower() != "arc":
+        return None
+    entries = [launcher.parent.parent / "cli.cjs",
+               launcher.parent / "node_modules/@glin/arc/dist/arc.cjs",
+               launcher.parent.parent / "@glin/arc/dist/arc.cjs"]
+    node = shutil.which("node.exe")
+    if node:
+        for entry in entries:
+            if entry.is_file():
+                return [node, str(entry.resolve())]
+    return None
+
+
+def try_arc_start(args, cwd, prompt_path, name):
+    """Return None only before launch or after an explicit refused acknowledgment."""
+    if not args.owned or args.read_only:
+        return None
+    arc_bin = resolve_bin("ARC_BIN", "arc")
+    if not arc_bin:
+        return None
+
+    def refuse(reason):
+        print(f"Arc route refused before acceptance: {reason}. Using the requested CLI transport.", file=sys.stderr)
+        return None
+
+    incompatible = [flag for flag, value in (
+        ("--worktree", args.worktree), ("--add-dir", args.add_dir),
+        ("--log", args.log),
+        ("--notify-thread", args.notify_thread), ("--wait", args.wait),
+        ("Claude --permission-mode " + str(args.permission_mode),
+         args.runner == "claude" and args.permission_mode in ("dontAsk", "bypassPermissions")),
+        ("Codex workspace-write with no approvals", args.runner == "codex" and not args.full_access),
+        ("Codex --permission-mode", args.runner == "codex" and args.permission_mode),
+    ) if value]
+    if incompatible:
+        return refuse("Arc cannot preserve " + ", ".join(incompatible))
+
+    launcher = arc_command(arc_bin)
+    if launcher is None:
+        return refuse("the Arc launcher cannot preserve literal arguments")
+    try:
+        if not stat.S_ISREG(os.stat(prompt_path).st_mode):
+            return refuse("the prompt file must be a regular file")
+        with open(prompt_path, "rb") as stream:
+            prompt = stream.read(48 * 1024 + 1)
+        if len(prompt) > 48 * 1024:
+            return refuse("the prompt file exceeds 48 KiB")
+        # Match JavaScript trimStart, including its UTF-8 BOM handling.
+        whitespace = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+        text = prompt.decode("utf-8-sig", errors="replace").lstrip(whitespace)
+        if not text or text.startswith("/"):
+            return refuse("the prompt must contain text without a prompt-box command")
+    except OSError as error:
+        return refuse(f"the prompt file is unavailable: {error}")
+
+    def run_arc(arguments, timeout):
+        return subprocess.run([*launcher, *arguments], cwd=cwd,
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=timeout)
+
+    try:
+        discovery = run_arc(["windows", "--json"], 30)
+        catalog = json.loads(discovery.stdout)
+        if discovery.returncode or not isinstance(catalog, dict) or catalog.get("version") != 1:
+            return refuse("window discovery is unavailable")
+        windows = catalog.get("windows")
+        if not isinstance(windows, list):
+            return refuse("window discovery is unavailable")
+        selector = os.environ.get("ARC_WINDOW")
+        if selector:
+            windows = [window for window in windows if isinstance(window, dict) and window.get("hostId") == selector]
+        elif catalog.get("complete") is not True:
+            return refuse("window discovery is incomplete")
+        if not windows:
+            return refuse("the selected Arc window is unavailable" if selector else "no Arc window is available")
+        if len(windows) != 1 or not isinstance(windows[0], dict):
+            return refuse("select one Arc window with ARC_WINDOW")
+        window = windows[0]
+        host = window.get("hostId")
+        if not isinstance(host, str) or not re.fullmatch(r"[a-f0-9]{24}", host):
+            return refuse("the window identifier is unavailable")
+        folders = window.get("folders")
+        if not isinstance(folders, list) or not folders or not isinstance(folders[0], str):
+            return refuse("the window has no launch folder")
+        if os.path.normcase(os.path.realpath(folders[0])) != os.path.normcase(os.path.realpath(cwd)):
+            return refuse("the window's first folder differs from --cwd")
+        if window.get("scopeReady") is not True or window.get("panelReady") is not True:
+            return refuse("the Arc window is not ready")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return refuse("window discovery is unavailable")
+
+    # An Arc CLI that no longer lists --untagged starts the reader's session by default.
+    try:
+        usage = run_arc(["--help"], 30)
+    except (OSError, subprocess.TimeoutExpired):
+        return refuse("the Arc command list is unavailable")
+    if usage.returncode:
+        return refuse("the Arc command list is unavailable")
+    untagged = ["--untagged"] if re.search(r"(?<![\w-])--untagged(?![\w-])", usage.stdout or "") else []
+
+    request_id = f"{host}:{uuid.uuid4().hex}"
+    command = ["start", "--window", host, "--request-id", request_id,
+               "--provider", args.runner, "--prompt-file", prompt_path,
+               *untagged, "--name", name, "--permissions",
+               "never" if args.runner == "codex" else args.permission_mode or "auto"]
+    for flag, value in (("--model", args.model), ("--effort", args.effort)):
+        if value:
+            command += [flag, value]
+    command.append("--arc-dispatch")
+    print(f"window: {host}")
+    print(f"request: {request_id}")
+    try:
+        launched = run_arc(command, 125)
+        if launched.stderr:
+            print(launched.stderr, end="" if launched.stderr.endswith("\n") else "\n", file=sys.stderr)
+        result = json.loads(launched.stdout.splitlines()[0])
+        if not isinstance(result, dict) or result.get("requestId") != request_id:
+            raise ValueError("missing launch acknowledgment")
+        status = result.get("status")
+        if status == "refused":
+            requester = result.get("requester")
+            if (set(result).issubset({"version", "requestId", "status", "reason", "requester"})
+                    and type(result.get("version")) is int and result["version"] == 1
+                    and "requester" in result
+                    and (requester is None or isinstance(requester, str) and 0 < len(requester) <= 256)
+                    and ("reason" not in result or isinstance(result["reason"], str))):
+                return refuse(result.get("reason", "Arc refused the launch"))
+            raise ValueError("malformed launch refusal")
+        print(json.dumps(result, ensure_ascii=False))
+        if status in ("accepted", "accepted-with-errors"):
+            session = result.get("sessionId")
+            if not isinstance(session, str) or not session or result.get("provider") != args.runner:
+                raise ValueError("missing accepted session identity")
+            print("mode: Arc session")
+            print(f"runner: {args.runner}")
+            print(f"tree: {cwd}")
+            print(f"name: {name}")
+            print(f"id: {session}")
+            _print_arc_receipt(session, name, True, args.runner)
+            return 0
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError) as error:
+        print(f"Arc start failed: {error}", file=sys.stderr)
+        if isinstance(error, subprocess.TimeoutExpired) and error.stderr:
+            detail = error.stderr.decode("utf-8", errors="replace") if isinstance(error.stderr, bytes) else error.stderr
+            print(detail, file=sys.stderr)
+    print("mode: Arc delivery unknown")
+    print(f"Arc delivery is unknown for request {request_id} in window {host}. "
+          "Do not start another worker. Inspect this request before any identical-ID retry.", file=sys.stderr)
+    return 2
 
 
 def main(argv=None):
@@ -983,6 +1281,9 @@ def main(argv=None):
     if argv and argv[0] == "--internal-supervise":
         return _run_internal_supervise(argv[1])
 
+    arc_only = bool(argv and argv[0] == "--internal-arc-only")
+    if arc_only:
+        argv.pop(0)
     args = build_parser().parse_args(argv)
     # A session opened in a window is one the owner watches, whether or not --owned was
     # also given.
@@ -999,6 +1300,8 @@ def main(argv=None):
         die("--runner must be claude or codex")
     if args.runner == "codex" and args.model:
         args.model = resolve_codex_model(args.model)
+    if args.runner == "claude" and args.model == "haiku":
+        args.model = "claude-haiku-5-5"
     if args.read_only and args.attach and args.runner == "claude":
         die("--attach is unsupported with Claude --read-only: print-mode output is buffered in the result log")
     if args.read_only and args.worktree and args.runner == "claude":
@@ -1010,7 +1313,7 @@ def main(argv=None):
     if args.read_tool and (args.runner != "claude" or not args.read_only):
         die("--read-tool requires --runner claude --read-only")
     if args.runner == "claude" and args.read_only and args.permission_mode:
-        die("--permission-mode cannot override Claude --read-only; it uses dontAsk with no permission prompts")
+        die("--permission-mode cannot override Claude --read-only; it sets its own permission mode with no permission prompts")
     if args.notify_thread and args.attach:
         die("--notify-thread requires a detached session")
     if args.wait and args.notify_thread:
@@ -1028,6 +1331,12 @@ def main(argv=None):
     log = os.path.realpath(args.log) if args.log else default_log(prompt_path, args.name)
     notify_log = strip_ext(log) + ".notify.log"
 
+    arc_result = try_arc_start(args, cwd, prompt_path, name)
+    if arc_result is not None:
+        return arc_result
+    if arc_only:
+        return 3
+
     claude_bin = resolve_bin("CLAUDE_BIN", "claude")
     codex_bin = resolve_bin("CODEX_BIN", "codex")
     if args.runner == "claude" and not claude_bin:
@@ -1038,6 +1347,24 @@ def main(argv=None):
         die("--notify-thread requires the codex executable to queue the callback")
 
     ctx = Context(cwd=cwd, prompt_path=prompt_path, name=name, log=log, notify_log=notify_log, claude_bin=claude_bin, codex_bin=codex_bin)
+    if args.notify_thread:
+        runner = 'claude-readonly' if args.runner == 'claude' and args.read_only else ('claude-writable' if args.runner == 'claude' else 'codex')
+        receipt = Receipt.create(args.notify_thread, runner, name, log, strip_ext(log) + '.last.md', codex_bin)
+        data = receipt.read()
+        ctx.receipt_path = str(receipt.root)
+        ctx.log = data['log']
+        ctx.notify_log = str(receipt.root / 'monitor.log')
+        if runner == 'claude-readonly':
+            receipt.update(report=ctx.log, report_format='claude-json')
+        if runner == 'claude-writable':
+            private_prompt = receipt.root / 'prompt.md'
+            private_prompt.write_bytes(Path(prompt_path).read_bytes() +
+                (f"\n\nWrite your final report to {data['report']}. This launch owns that result path.\n").encode('utf-8'))
+            ctx.prompt_path = str(private_prompt)
+            args.add_dir.append(str(receipt.root))
+        print(f"receipt: {receipt.root}")
+        print(f"recovery: {shlex.quote(sys.executable)} {shlex.quote(str(SKILL_DIR / 'receipt.py'))} {shlex.quote(str(receipt.root))} status")
+
 
     if args.runner == "claude":
         if args.read_only:

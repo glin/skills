@@ -11,6 +11,8 @@ Speak in roles, not model names, so the pattern survives model changes. The orch
 
 The skills repository's `docs/orchestration.md` records why each rule here exists.
 
+Read [../references/owner-brief.md](../references/owner-brief.md) before preparing any worker prompt. Apply it to initial briefs, review rounds, refreshed briefs, and native or dispatched consultation and falsification rounds.
+
 ## Orchestration contract
 
 - One implementer owns each production unit. Each correction batch goes to a fresh implementer with the unit's diff, the accepted findings and the choices the first implementer reported. A fresh implementer does not defend the first one's work.
@@ -52,7 +54,7 @@ Own the ground truth. Delegate bounded independent searches and reads when that 
 Put what you learn in writing. It becomes the executors' context.
 
 ### 3. Decompose
-Split into executor-sized units. Give one implementer each coherent cross-file unit. Run writers in parallel only as the contract allows. Use an ordered pipeline when one unit depends on another. Name exactly what each unit may touch. Match each wave to the runtime's active executor limit. Keep related files and review corrections in one coherent unit. Ask the user before launching more than two top-tier executors. Give a large fan-out specification to a fresh-context critic before delegation.
+Split into executor-sized units. Give one implementer each coherent cross-file unit. Run writers in parallel only as the contract allows. Use an ordered pipeline when one unit depends on another. Name exactly what each unit may touch. Match each wave to the runtime's active executor limit. Keep related files and review corrections in one coherent unit. Ask the author before launching more than two top-tier executors. Give a large fan-out specification to a fresh-context critic before delegation.
 
 ### 4. Delegate
 Spawn one executor per unit at a tier matched to the unit (see the Executor role above). Every executor prompt carries six things:
@@ -63,21 +65,14 @@ Spawn one executor per unit at a tier matched to the unit (see the Executor role
 5. The exact verification command and the result required to pass.
 6. A tool-call budget, and an honest report capped at a stated length that names any deviations and each non-obvious choice it made.
 
-Model selection depends on the agent client:
+Read [../references/model-providers.md](../references/model-providers.md) before selecting a transport or spawning. It owns provider availability, native inheritance, supported overrides, and the Bedrock delegation check. Read-only search uses the cheapest capable tier. Fully specified implementation uses the middle tier. Work that stays hard after specification uses the top tier. Claude Code maps those roles to `haiku`, `sonnet`, and `opus` through [../references/models.md](../references/models.md).
 
-- **Codex with Amazon Bedrock:** omit `model` and `reasoning_effort` from Agent spawns so the child inherits the configured provider-qualified model. Before spawning, run `codex debug models` and confirm the active model reports `multi_agent_version: v1`. Bedrock rejects the `encrypted_content` task envelope used by `v2` with `Invalid 'input': value did not match any expected variant`. If the catalog reports `v2`, stop and pin that model to `v1` through `model_catalog_json`, then start a fresh Codex session. Run one minimal canary spawn before a large fan-out. If it fails, stop and diagnose the first error instead of trying alternate model names.
-- **Codex with providers that accept explicit Agent model overrides:** set `model` on every spawn and match the tier to the unit:
-  - Read-only search, file location, and convention sweeps use the cheapest tier.
-  - Fully specified implementation uses the middle tier.
-  - Work that stays hard after specification uses the top tier.
-- **Claude Code:** set `model` on every Agent spawn. Use `haiku` for read-only search, `sonnet` for fully specified implementation, and `opus` only when the unit stays hard after specification. The build each alias names is in [../references/models.md](../references/models.md).
-
-The orchestrator owns discovery conclusions and verification. Forbid repo-global commands that mutate shared state, including `git stash`, `reset`, `checkout`, and `clean`. Isolate repo-wide tools and writable caches in separate worktrees. Serialize resources that no worktree can duplicate. These limits also bind the orchestrator while executors run. Use the Workflow tool for scripted fan-out over a known list.
+The orchestrator owns discovery conclusions and verification. Forbid repo-global commands that mutate shared state, including `git stash`, `reset`, `checkout`, and `clean`. Isolate repo-wide tools and writable caches in separate worktrees. Put each at `<repo>/.claude/worktrees/<unit-name>`, where `<repo>` is the main checkout, and reuse it for that unit's retries. On every exit, including a stop and a failure, remove each one with [../references/scripts/remove-worktree.py](../references/scripts/remove-worktree.py) under `python3`, never with `git worktree remove` or a recursive delete. The report names each tree removed or kept, with the reason. Serialize resources that no worktree can duplicate. These limits also bind the orchestrator while executors run. Use the Workflow tool for scripted fan-out over a known list.
 
 An executor may commit only when it runs alone: splitting one file's mixed changes into separate commits needs the index, so it cannot run beside a sibling. Give it the exact `@@` hunk headers per commit and forbid repair or fallback commands, on any hunk mismatch it stops and reports.
 
 ### 5. Re-verify (orchestrator)
-Do not trust an executor's "done." Re-run the verification yourself, compare to the baseline, and read the actual artifact. Only then integrate. If a unit regressed, restore the known-good state before re-delegating. Run one verifier pass after the implementation batch, not one after every unit. Give one accepted correction batch to a fresh implementer. The orchestrator does not patch a delegated unit. Use at most one fresh targeted re-verification. Ask the user before any further premium verification round.
+Do not trust an executor's "done." Re-run the verification yourself, compare to the baseline, and read the actual artifact. Only then integrate. If a unit regressed, restore the known-good state before re-delegating. Run one verifier pass after the implementation batch, not one after every unit. Give one accepted correction batch to a fresh implementer. The orchestrator does not patch a delegated unit. Use at most one fresh targeted re-verification. Ask the author before any further premium verification round.
 
 ### 6. Exit before context becomes workflow state
 
