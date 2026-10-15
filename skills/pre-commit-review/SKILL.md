@@ -7,17 +7,35 @@ description: "Review code changes before committing in isolated reviewer session
 
 Run a code review in isolated reviewer sessions. Supports multiple models in parallel.
 
+[README.md](README.md) explains the reasons behind review rules. Before changing a rule, read its relevant entry and add the reason for the change in the same commit.
+
+Read [../references/owner-brief.md](../references/owner-brief.md) before preparing any worker prompt. Apply it to initial briefs, review rounds, refreshed briefs, and native or dispatched consultation and falsification rounds.
+
 ## Transport
 
-Use a dispatched read-only review for every immutable candidate commit. A generic uncommitted review can keep the isolated-subagent route below.
+Read [../references/model-providers.md](../references/model-providers.md) before selecting reviewer models and transport. Follow its provider restrictions while keeping this workflow's read-only roles and review limits.
+
+Prefer isolated native reviewers when the active harness supports the requested model, provider, effort, and report-only role. Apply this choice to immutable candidates and uncommitted reviews. Prompt restrictions establish the reviewer's role, not an enforced filesystem read-only sandbox. When the task requires enforced sandboxing, use a transport that supplies it, such as Codex dispatch with `--read-only`. Use dispatched read-only review when the native combination or isolation is unavailable. Never substitute another requested model, provider, or effort.
+
+Dispatched review requires an immutable target. When uncommitted changes lack a supported native review route, report that limit instead of dispatching against a moving tree.
 
 Write one self-contained prompt file. Name the plan, repository instructions, base and candidate SHAs, change summary, changed files, known gaps, completed checks, review criteria, and allowed repository roots. Forbid reads outside those roots. Keep the prompt and raw reports outside the candidate worktree.
 
-Reuse the exact prompt bytes for every model in a controlled comparison. Do not put a result path in that prompt. Give each launch a unique result destination through transport metadata. Launch with `python3 dispatch/dispatch.py --read-only --effort high` and record the runner, model and effort. Without `--effort`, each runner uses its own default, and a Claude reviewer then runs at medium. When the active Codex session id is unambiguous, pass it through `--notify-thread` and let the callback trigger result processing. Never poll a reviewer from model turns. Once complete, read each report once. Carry forward only verified findings.
+Reuse the exact prompt bytes for every model in a controlled comparison. Do not put a result path in that prompt. Give each launch a unique result destination through transport metadata. When native metadata has no report destination, the coordinator saves the returned report verbatim to that launch's destination outside the candidate worktree. Record the harness or runner, model, provider, effort, and chosen completion route. Preserve requested effort in native parameters or dispatched `--effort`. Use high when no effort is specified.
 
-Use one initial dispatched pass per requested model. After batched corrections, start at most one new focused re-review session on the new immutable commit. Do not resume a reviewer against an evolving tree. Ask the user before starting any further premium review round.
+Select one completion route before each launch. A native reviewer returns through harness completion only. It must not launch a detached worker, request a queue callback, or independently repeat completion handling. Save its raw report when that completion arrives. For dispatched review, follow [../dispatch/SKILL.md](../dispatch/SKILL.md) for a detached callback or a supported waited route. Launch with `--read-only` and explicit `--effort`. Keep results and callback logs available for explicit recovery when delivery fails. Recovery does not cancel an accepted queued callback. Never poll a reviewer from model turns. Once complete, process each report through its selected route and carry forward only verified findings.
+
+A detached callback handler claims its exact dispatch receipt event before processing the frozen report. It acknowledges after saving the report and its disposition durably. A repeated consumed event returns the recorded outcome. Interrupted processing requires checking saved effects before resuming the recorded claim. Changed reports remain separate unread events. Use dispatch's explicit recovery commands for uncertain delivery or stopped monitoring.
+
+`$SKILLS_DIR` is the harness-reported skill directory with its last component removed as text, before filesystem traversal. Never obtain it through filesystem `..`. Read `references/session-naming.md` in `$SKILLS_DIR` once per invocation. Choose each reviewer's launch name before launch. Apply the convention to dispatched and native reviews, including plan reviews.
+
+Keep the calling workflow's reviewer count and round limits. Without caller limits, use one initial pass per requested model and at most one focused re-review after batched corrections. Select transport for the new immutable commit under the same rules. Do not resume a reviewer against an evolving tree. Ask the author before any further premium review round that the caller's limits do not authorize.
+
+For that re-review, give the reviewer the accepted findings with their exact quotes and the fix delta. Use `git diff <candidate> <replacement>` when the base did not move. Use `git range-diff <base>..<candidate> <target>..<replacement>` when the target moved. Ask the reviewer to read the delta first, then the code that uses the changed lines. Keep the full change available for context, and give this reviewer half the first round's tool-call budget.
 
 Reviewers are read-only reporters. Their prompts forbid edits, fixes, commits, and launching subagents. The implementation session verifies findings and batches accepted corrections. If a dispatched reviewer has no usable result after one hour, report its state and ask whether to continue, stop, or replace it.
+
+Record an immutable-candidate review only when the author asks to save a review record. A request such as "save the review record" or "keep a machine-readable review record" opts in without a path. Save it under the reviewed repository's `.claude/review-records/` when the author gives no path. An explicit file path overrides that directory. Without an opt-in request, follow the existing review and cleanup steps without a record. For uncommitted changes, write no record even when the author asks, and state that in the result. Follow [references/run-record.md](references/run-record.md) when recording.
 
 ## When to Use
 
@@ -40,52 +58,69 @@ Determine the list of changed files to review.
 
 ### 2. Parse Model Arguments
 
-The user may specify models in the argument. Parse the argument to identify requested models:
+The author may name models and request a record in ordinary language, with or without a file path. Parse the model choice, record opt-in, and optional path separately. For example, "Review this commit with GPT and save the review record" selects a model and the default record location. Do not treat a model name or a review request alone as record opt-in.
 
 The shorthands, and how to pass a model to `runSubagent`, are in [../references/models.md](../references/models.md). Read it rather than assuming a version; `consult` shares that file, so neither skill carries its own copy.
 
 If multiple models are specified (e.g., `/pre-commit-review opus sonnet`), run one isolated reviewer per model **in parallel**, using the selected transport.
 
-If no models are specified, use one reviewer on the current model, and omit the `model` parameter. Use multiple premium reviewers only when the user requests them or a calling workflow names them. Every reviewer is isolated from the implementation context.
+If no models are specified, use one reviewer on the current model, and omit the `model` parameter. Use multiple premium reviewers only when the author requests them or a calling workflow names them. Every reviewer is isolated from the implementation context.
 
-**OpenAI reviewer without `runSubagent`:** use the dispatched transport above for a fresh Codex review of an immutable commit. Point it at the commit (it reads the repository itself; do not pipe the diff through stdin), state the invariants the change must hold, and demand ranked findings with file:line and a concrete failure scenario each.
+Set a numeric tool-call budget in each first-round reviewer prompt. A focused re-review gets half that budget.
+
+**OpenAI reviewer without `runSubagent`:** use another supported native reviewer tool when it meets the Transport requirements. Otherwise use dispatched read-only review. Point the reviewer at the immutable commit, state the invariants, and demand ranked findings with file:line and a concrete failure scenario each.
 
 ### 3. Launch reviewer(s)
 
-For the subagent transport, call `runSubagent` for each requested review with:
+For native transport, use the active harness's reviewer tool, such as `runSubagent` or Codex `spawn_agent`. Choose an isolated context with no implementation history. For Codex, use `fork_turns: "none"`. Preserve requested model and effort under the provider rules. Never attach overrides to a full-history fork. Supply these fields through the tool's supported parameters:
 
-- `description`: "Code review (`<model-short-name>`)" - use distinct descriptions per model
+- `description` or `task_name`: The chosen workflow name, such as `code-review-1-catalog-update-sol`. Use the artifact stage and actual review round. Adapt punctuation to the tool's naming rules.
 - `model`: The model string from the table in Step 2 (omit for current session model)
-- `prompt`: Construct the prompt using the template below
+- Effort: Set the requested effort through the tool's supported parameter, such as Codex `reasoning_effort`.
+- `prompt` or `message`: Construct the prompt using the template below
 
 #### Building the Prompt
 
-Before constructing the prompt, write a **2-4 sentence change summary** describing what was changed and why, based on the conversation history. This gives the reviewer the same intent context you have. Include: the goal, the approach taken, and any notable design decisions. This replaces the `{CHANGE_SUMMARY}` placeholder below.
+Before constructing the prompt, write a **2-4 sentence change summary** stating the goal and approach. This replaces the `{CHANGE_SUMMARY}` placeholder below. Do not claim that the change works or handles a case. The reviewer checks whether the implementation meets that goal.
 
-**Then list what you already know is missing and chose to leave alone.** This replaces `{KNOWN_GAPS}`. A gap you left on purpose reads to a reviewer exactly like a gap nobody noticed, and leaving it unsaid costs twice. The reviewer spends part of its budget rediscovering it, and when the reviewer does not find it you cannot tell whether it looked. Write each one as the case, then the instruction, then the invitation:
+When recording, capture the source skill's full commit SHA in `run.json` as `skill_version` when saving the first reviewer prompt. Use the source revision supplied with a copied installation when its Git history is unavailable. The record writer reads this saved value after the review, so a later skill edit cannot change the recorded version.
+
+**Then list what you already know is missing and chose to leave alone.** This replaces `{KNOWN_GAPS}`. A gap you left on purpose reads to a reviewer exactly like a gap nobody noticed, and leaving it unsaid costs twice. The reviewer spends part of its budget rediscovering it, and when the reviewer does not find it you cannot tell whether it looked. Use "Do not report" only for author-approved exclusions, and assess implementer disclosures under existing scope and severity rules. For an author-approved exclusion, use this form:
 
 ```
+Author instruction: "{OWNER_INSTRUCTION_QUOTE}"
+Source: {OWNER_INSTRUCTION_SOURCE}
 Known and deliberately not fixed: a conversation the panel opens fresh has neither `resume`
 nor `sessionId`, so the seed does not cover its first press. Do not report that one. Do
 report anything else the seed misses.
 ```
 
-The last sentence is not optional. Naming a gap tells the reviewer where to stop looking, and without the invitation it stops on the whole area rather than on the one case. Write "None." when there are none. An empty section is a claim the reviewer can act on, and a missing one is silence.
+For an author-approved exclusion, keep the invitation to review other cases. Write "None." when there are none. An empty section is a claim the reviewer can act on, and a missing one is silence.
+
+Set `{REVIEW_TARGET}` to the uncommitted changes or to the immutable candidate SHA against its base SHA.
 
 #### Subagent Prompt Template
 
 ```
-You are a code reviewer. Review the uncommitted changes in this workspace for issues, before they are committed.
+You are a code reviewer. Review {REVIEW_TARGET} for issues.
 
 ## Change Summary
 
 {CHANGE_SUMMARY}
 
+## Plan and Brief
+
+{PLAN_AND_BRIEF_PATHS_OR_NONE}
+
 ## Changed Files
 
 {LIST THE CHANGED FILES HERE}
 
-## Known and out of scope
+## Allowed repository roots
+
+{ALLOWED_REPOSITORY_ROOTS}
+
+## Known gaps and authorized exclusions
 
 {KNOWN_GAPS}
 
@@ -107,7 +142,9 @@ Skip criteria that are irrelevant to the file types being reviewed.
 
 ## Instructions
 
-Get the full diff for these files yourself using git. Read the changed files in full to understand surrounding context. Use workspace search tools to check for dead code, duplication, and verify constants. Only read files within the workspace.
+Get the full diff for these files yourself using git. Read the changed files in full to understand surrounding context. Use workspace search tools to check for dead code, duplication, and verify constants.
+
+For an immutable candidate, read its content with `git show <candidate>:<path>` or from a checkout fixed at that SHA. Do not substitute moving working-tree content. Stay within the allowed repository roots named in this prompt.
 
 **The working tree is not yours.** Another session may be editing this repository while you read it, and its work is uncommitted and unrecoverable. Never run `git checkout -- <path>`, `git stash`, `git reset --hard`, or `git clean`, whatever the reason. Do not mutation-test a guard or write a temporary change into the workspace. If the tree is dirty in files outside your review range, leave them alone and say so in your report.
 
@@ -122,9 +159,11 @@ Also run a bounded beyond-diff sweep: for each shared symbol (field, serialized 
 
 Only flag issues introduced by the changes. Before reporting any finding, verify the problematic code appears in the `git diff` output (added or modified lines). If code was not changed in this diff, it is out of scope - even if you discover a real bug while reading surrounding context. Pre-existing issues in unchanged code may be mentioned as INFO at most, clearly labeled "[pre-existing]", but never WARNING or CRITICAL.
 
-Do not flag untracked files unless they appear in the staged changes. Do not assume which files the user intends to commit.
+Do not flag untracked files unless they appear in the staged changes. Do not assume which files the author intends to commit.
 
 Plan files can lag implementation details. When the review prompt names a current plan, treat its requirements and repository-owned design requirements as constraints. Code outranks stale implementation notes, not current product intent. Flag contradictions.
+
+Check each factual claim that the review reaches against the code. A contradiction is a finding that quotes both the claim and the code. Exclude a known gap only when the author's recorded instruction excludes it. An implementer's disclosure is not author approval. Assess other gaps under the existing severity and scope rules.
 
 **When the change under review IS a design document** rather than code with one attached, most criteria above do not apply, and an omissions pass matters more than the verification pass. A prompt that lists claims to verify gets those claims verified and nothing else, so ask separately what the document does not say: a step that cannot be followed as written, an axis never mentioned, a claim that something does not exist, a case the verification section cannot reach. Two reviewers on an identical prompt can return zero overlapping findings, with the one that checked every stated claim approving a plan whose central step was unimplementable.
 
@@ -144,16 +183,44 @@ Return a review with:
 
 Severity and confidence are separate axes: severity is the impact if the finding is real; confidence is how sure you are that it is real. A high-impact guess is still a guess. **Do not use hedge words ("possibly", "might", "appears to") on a high-confidence finding** - if you are hedging, it is not high confidence, so label it medium or low.
 
-**Report low-confidence findings too, clearly labeled; do not silently drop them.** This is an interactive review where the user decides what matters, so a labeled "maybe" is more useful than a hidden one. (Filtering low-confidence findings makes sense when posting unattended to a PR, but not here.)
+**Report low-confidence findings too, clearly labeled; do not silently drop them.** This is an interactive review where the author decides what matters, so a labeled "maybe" is more useful than a hidden one. (Filtering low-confidence findings makes sense when posting unattended to a PR, but not here.)
 
 If there are no issues, say so clearly. Do not fabricate issues.
 ```
 
-### 4. Process Review Results
+### 4. Verify Findings Before Acting
 
-After all subagent(s) return:
+Run this as soon as a report arrives, before any finding is presented to the author. This splits into two checks: one compares text, and one needs judgement.
 
-**Context management:** The subagent responses contain the full review output. Present a concise summary to the user (findings table + verdict). Do not quote the full raw response in subsequent turns - summarize it once, then refer back to specific findings by number if the user asks follow-up questions.
+*Does the cited text exist where the finding says?* Run `quote_check.py` against the report, with `--root` set to a checkout at the reviewed state: the commit itself for an immutable candidate, or the working tree as it stood before any fix began for an uncommitted review. `$SKILL_DIR` is the directory that holds this SKILL.md. The harness gives that location when it loads the skill. Never search the filesystem for it.
+
+A dispatched review writes its report to a file outside the repository. Point `--report` at that file:
+
+```bash
+python3 "$SKILL_DIR/scripts/quote_check.py" --root <reviewed tree> --report <report file>
+```
+
+A native review returns its report as text. Save it verbatim at the launch's report destination, then use the same `--report` command. For an uncommitted review without a saved report, pipe the returned text on stdin instead. Use a quoted heredoc, never a double-quoted here-string: a double-quoted here-string runs every backtick span in the report as a command and expands every `$`, which corrupts the report before the script ever sees it.
+
+```bash
+python3 "$SKILL_DIR/scripts/quote_check.py" --root <reviewed tree> <<'REPORT'
+<report text>
+REPORT
+```
+
+Read every finding's verdict from the JSON output, whatever the exit code, except exit 2 or exit 3. Exit code 0 can still include `present-elsewhere` findings, so the exit code alone never substitutes for reading the JSON. Exit code 1 means at least one finding is `absent`, `file-missing`, or `unparseable`. Exit code 2 is a usage error. Fix the command and rerun it. Exit code 3 means the script could not parse any finding out of the report. The report can still hold real findings in a format the script does not recognize, so on exit 3, check every finding in the report by hand.
+
+Drop only the findings the script's JSON marks `absent` or `file-missing`. These never reach the author as findings. The summary in step 5 notes their count. For a finding marked `present`, skip re-comparing the quote against the file and move straight to the judgement check below. Give a finding marked `present-elsewhere` or `unparseable` the full check: compare the quote against the file yourself, then judge it. Give the same full check to any finding the JSON does not list at all, for example because the report mixed formats. Never drop an `unparseable` finding on the script's verdict alone, since a quote the script could not pair or place can still name a real problem.
+
+*Does the cited text mean what the finding says?* This is the half that needs judgement, and it is where the remaining errors live. A finding can quote a real line perfectly and draw a conclusion the line does not support. Read the surrounding code, not just the quoted fragment, before acting on any finding whose quote checked out.
+
+### 5. Process Review Results
+
+After step 4 verifies the findings:
+
+When recording, mark an accepted finding that contradicts a factual brief claim with `disputes_brief: true` in the triage. Keep every reviewer's report and its final call in the run folder until the record is written.
+
+**Context management:** The subagent responses contain the full review output. Present a concise summary of the surviving findings to the author (findings table + verdict), noting the count of any findings dropped as absent or file-missing without listing them as findings. Do not quote the full raw response in subsequent turns - summarize it once, then refer back to specific findings by number if the author asks follow-up questions.
 
 **For multi-model reviews**, present a single unified findings table:
 
@@ -166,32 +233,26 @@ Show which models caught each finding and at what severity. After the table, add
 
 **For single-model reviews**, present findings directly without the model columns.
 
-Then **ask the user** what they want to do:
+Then **ask the author** what they want to do:
 - Fix all issues
 - Fix specific issues (by number)
 - Ignore and commit as-is
 - Get more details on specific findings
 
-If the user chooses to fix issues, proceed with the fixes in the main session using the review findings as guidance.
+If the author chooses to fix issues, proceed with the fixes in the main session using the review findings as guidance.
 
-### 5. Verify Findings Before Acting
+If the author wants to commit after approval, stage only the files related to the reviewed changes. Do not use `git add -A` as that may stage unrelated files.
 
-**Verify each finding against the actual file before applying it.** This splits into two checks: one compares text, and one needs judgement.
+### 6. Record and delete the review artifacts
 
-*Does the cited text exist where the finding says?* Open the cited file at the cited line and compare the quote with what is there, ignoring differences in whitespace. A quote that was re-indented or that spans a line break is still present. Read the cited lines instead of searching for the quote, because a search misses on whitespace, and the miss then reads as a hallucination when the finding is correct. A quote that appears nowhere in the cited file, or a cited file that does not exist, is a fabricated citation and needs no further judgement.
+Native and dispatched reviews keep their prompt and raw report outside the candidate worktree. A dispatched review also keeps its worker and callback logs there. The calling workflow can retain these artifacts for recovery or review evidence.
 
-*Does the cited text mean what the finding says?* This is the half that needs judgement, and it is where the remaining errors live. A finding can quote a real line perfectly and draw a conclusion the line does not support. Read the surrounding code, not just the quoted fragment, before acting on any finding whose quote checked out.
+When record opt-in applies to an immutable candidate, write the record with `scripts/write_record.py` after triage and corrections. Omit `--out` for the default location, or pass `--out <record file>` for an explicit path. Keep the run directory when recording fails, and report the error and its path so the caller can retry. Delete the run directory only after the record is written and every accepted correction is committed.
 
-If the user wants to commit after approval, stage only the files related to the reviewed changes. Do not use `git add -A` as that may stage unrelated files.
-
-### 6. Delete the review artifacts
-
-A dispatched review writes its prompt, its log and its raw report outside the repository, so the reviewer never sees or dirties the tree it reviews. Nothing removes them afterwards, and every review leaves a directory behind.
-
-Delete the run directory once the findings are verified and every accepted correction is committed. The commit and the summary already carry what the review found, and the raw report is a copy nobody opens again.
+Without record opt-in, delete the run directory once the findings are verified and every accepted correction is committed. The commit and the summary already carry what the review found, and the raw report is a copy nobody opens again.
 
 ```bash
-rm -rf <dispatch parent>/<run name>
+rm -rf <run parent>/<run name>
 ```
 
-Keep the directory only while a finding is still open, or when the user asks for the report. Give every run its own directory under one parent, so the removal is one command. Say in the summary that the artifacts are gone, so nobody looks for a path that no longer resolves.
+Keep the directory while a finding is open, recording or delivery has failed, or the caller or author requires retention. Give every run its own directory under one parent, so the removal is one command. Say in the summary that the artifacts are gone, so nobody looks for a path that no longer resolves.
