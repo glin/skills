@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Codex app display metadata. Codex reads each skill from SKILL.md alone.
+**/agents/openai.yaml
