@@ -360,8 +360,12 @@ def count(value: Any, unit: str = "") -> str:
     return UNAVAILABLE if value == UNAVAILABLE else f"{value:,}{unit}"
 
 
+def error_head(error: str | None, rule: str | None) -> str:
+    return f"error: {error}. Stop rule: {rule}" if rule else f"error: {error}"
+
+
 def render_text(verdict: str, rule: str | None, counters: dict[str, Any], error: str | None) -> str:
-    head = f"stop: {rule}" if verdict == "stop" else (f"error: {error}" if verdict == "error" else "continue")
+    head = f"stop: {rule}" if verdict == "stop" else (error_head(error, rule) if verdict == "error" else "continue")
     lines = [
         head,
         f"requests: {count(counters['requests'])}",
@@ -386,8 +390,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 log.write(f"{stamp} {arguments.operation}\n{render_text(verdict, rule, counters, error)}\n")
         except OSError as failure:
             # A block that never reaches the run folder cannot continue the run.
+            # A stop keeps its rule so the printed block still names it.
             if verdict != "error":
-                verdict, rule, error = "error", None, f"cannot write {path}: {failure.strerror}"
+                verdict, error = "error", f"cannot write {path}: {failure.strerror}"
     if arguments.json:
         output = json.dumps({"verdict": verdict, "rule": rule, "error": error, **counters}, indent=2) + "\n"
     else:

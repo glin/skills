@@ -224,6 +224,14 @@ class StopCheckTests(unittest.TestCase):
                 self.assertTrue(lines[0].startswith("error: cannot write"), lines)
                 self.assertIn("ceiling: 20.00 USD", lines)
 
+    def test_a_stop_keeps_its_rule_when_the_block_cannot_be_saved(self) -> None:
+        folder = os.path.join(self.directory, "run")
+        os.makedirs(os.path.join(folder, stop_check.BLOCK_FILE))
+        code, lines = self.run_script(report(priced=40.0), "--ceiling", "20", "--run-folder", folder)
+        self.assertEqual(code, 2, lines)
+        self.assertTrue(lines[0].startswith("error: cannot write"), lines)
+        self.assertIn("Stop rule: absolute stop reached", lines[0])
+
     def test_dispatched_sources_count_once(self) -> None:
         dispatched = self.write("dispatched-cost.json", {"sources": [
             {"sessionId": "linked-child", "pricedCostUsd": 7.0, "costUsd": 7.0},
