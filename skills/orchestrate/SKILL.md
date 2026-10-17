@@ -123,7 +123,7 @@ A stop is a pause. Finish every part the answer does not affect, then ask one qu
 
 An author exchange never spends a review round.
 
-At Close, automatically include a next-run prompt when the plan has another runnable phase or step. Use `/orchestrate <plan path> <phase or step> only.` in a code block. Add overrides only when the author explicitly assigned them to the next run. For a blocked next phase, name its unresolved prerequisite instead of giving a launch prompt. Printing the prompt does not authorize starting the next phase.
+For requested follow-up execution, apply Follow-up execution below. Otherwise include a next-run prompt at Close for another runnable step. Use `/orchestrate <plan path> <phase or step> only.` in a code block. Add only overrides the author assigned to that next step. For a blocked step, name its unresolved prerequisite. A printed prompt grants no authority.
 
 When the task has a plan file, a cheap subagent writes each plan edit, such as the author's answer to a Brief stop, or the line `stopped spend: <run start> <usd>` under the phase at every stop. A later stop of the same run replaces its own line. Resolve the plan's repository with `git -C <plan directory> rev-parse --show-toplevel`, and never `git add -f` a plan path. When that repository is not the one being built, commit the edit there at once with `git commit -- <path>...`, never a bare `git commit`, because that index can hold files other sessions staged. When it is the one being built, write the edit in the tree that holds the topic branch, and keep it out of every implementer commit. Commit the plan path alone on the topic branch only after the last review round and before any Delivery, on top of the reviewed tip. A commit that changes only the plan path needs no review. At a stop, Close leaves the edit uncommitted, and the stop report names the plan path. The file stays on disk in the task's tree, so compaction cannot lose it. The next run on the task keeps the edit by this rule. No plan commit ever goes directly on the default branch, and none lands between the base and the candidate.
 
@@ -139,9 +139,17 @@ Immutable reviewers follow [../pre-commit-review/SKILL.md](../pre-commit-review/
 
 For a detached callback, claim its exact receipt event before processing the frozen report. Acknowledge after durable incorporation or explicit failure resolution. A consumed event returns its recorded outcome. Interrupted processing requires checking durable effects before resuming the recorded claim. Use dispatch's explicit recovery commands for uncertain delivery or a stopped monitor. Do not add model polling or a second result route.
 
-Use `phased-plan` when a written plan spans several sessions. Do not stretch one orchestration turn across those phases.
+Use `phased-plan` when a written plan spans several sessions. Execute one phase at a time within the author's authorization.
 
-At the first compaction, finish the current atomic operation and prepare a durable handoff. Start no new unit. At the second compaction, end the phase in a fresh session.
+## Follow-up execution
+
+When the author asks you to run follow-ups, execute the named authorized steps. Continue in this session while its context remains useful. A request for thoughts, planning, or consultation grants no execution authority. A phase-only restriction still binds. A plan's next phase supplies no authority to start it.
+
+Save task state before compaction or transfer. Retain original run and session identities, decisions, commits, artifacts, consumed allocations, remaining limits, spend, and unknown cost coverage. Session changes renew no implementation, review, request, token, or dollar allocation. Preserve earlier stopped spend and source ownership. Do not split one run's accounting by starting a fresh session.
+
+Native compaction during ongoing work does not end the task or require another invocation. Choose the session by context relevance and the next step's needs, never a compaction count. Arc's after-turn compaction schedules no next prompt and cannot provide unattended continuation.
+
+When clean context serves the work, use the installed session-management workflow's requested follow-up procedure for one reader-owned successor. That procedure owns settings, delivery, completion routing, and predecessor retention. If the skill or required capability is unavailable, report the blocker and durable handoff. A manual prompt is only the fallback for that blocker. Never substitute a detached worker for reader-owned continuation.
 
 ## Delivery
 
