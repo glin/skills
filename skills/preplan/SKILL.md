@@ -1,19 +1,19 @@
 ---
 name: preplan
-description: "Choose a cost-efficient execution shape before a non-trivial agent task. Produces a bounded brief with model roles, session topology, verification budget, permissions, return path, stop conditions, and a copy-ready execution prompt. Use when the user asks how to run work cheaply, requests model and orchestration advice together, wants an autonomous one-prompt workflow, or wants to compare inline work, subagents, fresh-session handoffs, and phased execution. Do not use for a trivial task whose execution is cheaper than planning it."
+description: "Choose a cost-efficient execution shape before a non-trivial agent task. Produces a bounded brief with model roles, session topology, verification budget, permissions, return path, stop conditions, and a copy-ready execution prompt. Use when the author asks how to run work cheaply, requests model and orchestration advice together, wants an autonomous one-prompt workflow, or wants to compare inline work, subagents, fresh-session handoffs, and phased execution. Do not use for a trivial task whose execution is cheaper than planning it."
 ---
 
 # Preplan
 
-Choose the least expensive workflow that has enough capability and verification to produce an accepted result. Optimize the whole job, including planning, implementation, retries, verification, review, user attention, and integration.
+Choose the least expensive workflow that has enough capability and verification to produce an accepted result. Optimize the whole job, including planning, implementation, retries, verification, review, author attention, and integration.
 
-This skill plans execution. It does not implement, launch agents, change settings, or grant permissions unless the user explicitly asks the same turn to plan and execute.
+This skill plans execution. It does not implement, launch agents, change settings, or grant permissions unless the author explicitly asks the same turn to plan and execute.
 
 ## Keep the preplan cheaper than the work
 
-Read the user's task, its plan or handoff, repository instructions, current state, and standard verification command. Batch independent inspection into as few reads as practical. Stop discovery when the execution shape and risk are clear.
+Read the author's task, its plan or handoff, repository instructions, current state, and standard verification command. Batch independent inspection into as few reads as practical. Stop discovery when the execution shape and risk are clear.
 
-Do not load personal model notes or historical evals unless the user asks to use them. Verify current model availability, effort levels, and prices from the active runtime and official provider sources when they affect the recommendation. Distinguish API prices, subscription usage, credits, and estimated list-price equivalents.
+Do not load notes on past model performance or historical evals unless the author asks to use them. Verify current model availability, effort levels, and prices from the active runtime and official provider sources when they affect the recommendation. Distinguish API prices, subscription usage, credits, and estimated list-price equivalents.
 
 Skip this skill when one bounded edit and one focused check will cost less than the planning pass.
 
@@ -28,7 +28,7 @@ Record only facts that change execution:
 - Verification: none, subjective, focused checks, strong automated checks, or live application proof.
 - State: shared checkout, mutable service, browser, IDE, device, account, port, cache, or external approval.
 - Expected duration and whether the work fits one coherent context.
-- Actions that need advance authority and conditions that still require the user.
+- Actions that need advance authority and conditions that still require the author.
 
 ## Choose the session topology
 
@@ -45,6 +45,8 @@ Do not keep a coordinator alive only to relay a self-contained result. Do not sp
 Read [references/handoffs.md](references/handoffs.md) before recommending a subagent, fresh-session handoff, callback, or detached worker.
 
 ## Choose models and effort
+
+Read [../references/model-providers.md](../references/model-providers.md) when the brief selects a provider, native children, or fresh CLI sessions. Record its execution preconditions in the brief without launching a check or changing settings.
 
 Select the cheapest available model with enough capability for the judgment that remains after the brief.
 
@@ -85,7 +87,7 @@ A workflow is fully autonomous only when it has:
 - Objective completion checks.
 - Required permissions at launch.
 - A durable progress and result path.
-- A return channel or an explicit statement that the user must resume it.
+- A return channel or an explicit statement that the author must resume it.
 - Stop conditions for ambiguity and irreversible actions.
 
 Do not call a detached run autonomous when no supported mechanism can notify or resume its origin.
@@ -104,4 +106,4 @@ Lead with the recommended topology, models, effort, and confidence. Then provide
 8. One copy-ready prompt for the selected execution session.
 9. One cheaper alternative when it changes the tradeoff meaningfully.
 
-If the user authorized execution, pass the brief to the applicable execution skill after presenting the estimate. Use `orchestrate` for one end-to-end session, `dispatch` for a fresh-session handoff, `delegate` for bounded child work, and `phased-plan` for multiple sessions.
+If the author authorized execution, pass the brief to the applicable execution skill after presenting the estimate. Use `orchestrate` for one end-to-end session, `dispatch` for a fresh-session handoff, `delegate` for bounded child work, and `phased-plan` for multiple sessions.
