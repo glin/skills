@@ -72,7 +72,7 @@ The orchestrator owns discovery conclusions and verification. Forbid repo-global
 An executor may commit only when it runs alone: splitting one file's mixed changes into separate commits needs the index, so it cannot run beside a sibling. Give it the exact `@@` hunk headers per commit and forbid repair or fallback commands, on any hunk mismatch it stops and reports.
 
 ### 5. Re-verify (orchestrator)
-Do not trust an executor's "done." Re-run the verification yourself, compare to the baseline, and read the actual artifact. Only then integrate. If a unit regressed, restore the known-good state before re-delegating. Run one verifier pass after the implementation batch, not one after every unit. Give one accepted correction batch to a fresh implementer. The orchestrator does not patch a delegated unit. Use at most one fresh targeted re-verification. Ask the author before any further premium verification round.
+Do not trust an executor's "done." Re-run the verification yourself, compare to the baseline, and read the actual artifact. Only then integrate. If a unit regressed, restore the known-good state before re-delegating. Run one verifier pass after the implementation batch, not one after every unit. Give one accepted correction batch to a fresh implementer. The orchestrator does not patch a delegated unit. Use at most one fresh targeted re-verification. Ask the author before any further premium verification round. A calling workflow's verification limits take precedence over these defaults.
 
 ### 6. Exit before context becomes workflow state
 

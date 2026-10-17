@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""Decide whether a coordinator continues past a numeric limit, and print its counters.
+
+The verdict covers numeric limits only: spend against the ceiling and the absolute stop,
+admission of a paid launch, unpriced usage, and the round rules for a fix round. Request and
+context counts are checkpoints, so the script reports them and never stops on them. Every other
+stop condition in the calling workflow still binds.
+
+The cost source is the Arc report from session-cost-audit's arc_cost.py, schema version 2.
+Pass --cost-json to read a saved report instead of running arc_cost.py.
+
+Exit 0 means continue, 1 means stop, and 2 means an error. On exit 2 the counter block still
+prints, and each figure the script cannot read shows as unavailable.
+"""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+from typing import Any, Sequence
+
+SCHEMA_VERSION = 2
+UNAVAILABLE = "unavailable"
+OPENING_FILE = "stop-check-opening.json"
+BLOCK_FILE = "stop-check.txt"
+OPERATIONS = (
+    "checkpoint",
+    "fix-round",
+    "re-review",
+    "carry-review",
+    "supplemental-review",
+    "rebase",
+    "landing",
+)
+ROUND_KINDS = ("review", "correction", "carry")
+
+RULE_ABSOLUTE = "absolute stop reached"
+RULE_ADMISSION = "admission would pass the absolute stop"
+RULE_UNPRICED = "unpriced usage blocks paid work"
+RULE_DIAGNOSE = "diagnose"
+RULE_NOT_CONVERGING = "not converging"
+RULE_CEILING = "ceiling before a fix round that is not converging"
+
+
+class CostError(Exception):
+    """A cost source is unusable, or the run folder refused a write."""
+
+
+def money(text: str) -> float:
+    value = float(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text} is negative. A dollar amount is 0 or more.")
+    return value
+
+
+def tokens(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text} is negative. A token count is 0 or more.")
+    return value
+
+
+def review_round(text: str) -> tuple[str, int, int]:
+    """Parse KIND:FINDINGS[:REGRESSIONS], such as correction:2:1."""
+    parts = text.split(":")
+    if len(parts) not in (2, 3) or parts[0] not in ROUND_KINDS:
+        raise argparse.ArgumentTypeError(
+            f"{text} is not KIND:FINDINGS[:REGRESSIONS] with KIND one of {', '.join(ROUND_KINDS)}"
+        )
+    try:
+        findings = int(parts[1])
+        regressions = int(parts[2]) if len(parts) == 3 else 0
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text} holds a count that is not a whole number") from None
+    if findings < 0 or regressions < 0 or regressions > findings:
+        raise argparse.ArgumentTypeError(
+            f"{text} needs 0 or more findings and no more regressions than findings"
+        )
+    return parts[0], findings, regressions
+
+
+def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    source = parser.add_argument_group("cost source")
+    source.add_argument("--session", help="Coordinator session id, priced with arc_cost.py.")
+    source.add_argument("--since", help="Run start in UTC, passed to arc_cost.py as --since.")
+    source.add_argument("--until", help="Pricing end in UTC, passed to arc_cost.py as --until.")
+    source.add_argument("--arc-cost", help="Path to arc_cost.py. Defaults to the session-cost-audit skill beside this one.")
+    source.add_argument("--cost-json", help="Read a saved Arc cost report instead of running arc_cost.py.")
+    source.add_argument("--dispatched-cost", help="dispatched-cost.json from the run folder.")
+    limits = parser.add_argument_group("limits")
+    limits.add_argument("--ceiling", type=money, required=True, help="Route ceiling in USD.")
+    limits.add_argument("--absolute-stop", type=money, help="Absolute stop in USD. Defaults to twice the ceiling.")
+    limits.add_argument("--earlier-spend", type=money, default=0.0, help="Stopped spend of earlier runs on this phase, in USD.")
+    limits.add_argument("--opening-context", type=tokens, help="Coordinator context at Brief, in tokens.")
+    limits.add_argument("--run-folder", help=f"Run folder. The first call saves the opening context in {OPENING_FILE}. Every call appends its block to {BLOCK_FILE}.")
+    admission = parser.add_argument_group("admission")
+    admission.add_argument("--outstanding", type=money, action="append", default=[], help="Allowance of one running worker, in USD. Repeat per worker.")
+    admission.add_argument("--reserve", type=money, default=0.0, help="Reserve for required verification and Close, in USD.")
+    admission.add_argument("--launch-allowance", type=money, help="Allowance of the paid launch about to start, in USD.")
+    admission.add_argument("--unpriced-allowance-left", type=money, help="What remains of the bounded allowance the author granted for paid work while usage is unpriced, in USD. The coordinator subtracts each admitted launch from it.")
+    rounds = parser.add_argument_group("rounds")
+    rounds.add_argument("--operation", choices=OPERATIONS, default="checkpoint", help="The step about to run.")
+    rounds.add_argument("--round", type=review_round, action="append", default=[], dest="rounds", metavar="KIND:FINDINGS[:REGRESSIONS]", help="One review round in order. KIND is review, correction or carry. REGRESSIONS counts accepted findings the preceding correction caused.")
+    rounds.add_argument("--continuing-authorization", action="store_true", help="The author granted continued or unlimited rounds.")
+    rounds.add_argument("--replan-done", action="store_true", help="A replan or diagnosis was completed after the latest round stop.")
+    parser.add_argument("--json", action="store_true", help="Print one JSON object instead of text.")
+    arguments = parser.parse_args(argv)
+    if arguments.cost_json is None and not (arguments.session and arguments.since):
+        parser.error("pass --cost-json, or --session and --since")
+    if arguments.absolute_stop is None:
+        arguments.absolute_stop = 2 * arguments.ceiling
+    return arguments
+
+
+def default_arc_cost() -> Path:
+    # Take the skills directory from the text of this path, so a linked skill folder stays put.
+    script = Path(os.path.abspath(__file__))
+    return script.parent.parent.parent / "session-cost-audit" / "scripts" / "arc_cost.py"
+
+
+def load_report(arguments: argparse.Namespace) -> dict[str, Any]:
+    if arguments.cost_json is not None:
+        try:
+            text = Path(arguments.cost_json).read_text(encoding="utf-8")
+        except OSError as error:
+            raise CostError(f"cannot read {arguments.cost_json}: {error.strerror}") from None
+    else:
+        script = Path(arguments.arc_cost) if arguments.arc_cost else default_arc_cost()
+        command = [sys.executable, str(script), arguments.session, "--since", arguments.since]
+        if arguments.until:
+            command += ["--until", arguments.until]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", check=False)
+        except OSError as error:
+            raise CostError(f"cannot run {script}: {error.strerror}") from None
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            raise CostError(f"arc_cost.py exited {result.returncode}: {detail[0] if detail else 'no output'}")
+        text = result.stdout
+    try:
+        report = json.loads(text)
+    except json.JSONDecodeError:
+        raise CostError("the cost report is not JSON") from None
+    if not isinstance(report, dict) or report.get("schemaVersion") != SCHEMA_VERSION:
+        raise CostError(f"the cost report is not Arc cost schema version {SCHEMA_VERSION}")
+    return report
+
+
+def number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def owned_sources(report: dict[str, Any]) -> set[str]:
+    owned = set()
+    source = report.get("source")
+    if isinstance(source, dict) and source.get("sessionId"):
+        owned.add(str(source["sessionId"]))
+    for child in report.get("children") or []:
+        if isinstance(child, dict) and child.get("sessionId"):
+            owned.add(str(child["sessionId"]))
+    return owned
+
+
+def moment(value: Any) -> datetime | str:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return str(value)
+
+
+def same_end(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    return moment(left) == moment(right)
+
+
+def load_dispatched(path: str, owned: set[str], window_end: Any) -> tuple[float, bool, bool]:
+    """Return the priced sum of unowned dispatched sources, whether any source is unpriced, and
+    whether every unowned source has a priced figure."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as error:
+        raise CostError(f"cannot read {path}: {error.strerror}") from None
+    except json.JSONDecodeError:
+        raise CostError(f"{path} is not JSON") from None
+    entries = data.get("sources") if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        raise CostError(f"{path} holds no list of sources")
+    total = 0.0
+    unpriced = False
+    every_priced = True
+    seen = set(owned)
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("sessionId"):
+            raise CostError(f"{path} holds a source without a sessionId")
+        if "until" in entry and not same_end(entry["until"], window_end):
+            raise CostError(
+                f"{path} prices {entry['sessionId']} to {entry['until']}, but the cost report ends at {window_end}"
+            )
+        source = str(entry["sessionId"])
+        if source in seen:
+            continue
+        seen.add(source)
+        if entry.get("costUsd") is None or entry.get("requestCountExact") is False:
+            unpriced = True
+        priced = number(entry.get("pricedCostUsd"))
+        if priced is None:
+            unpriced = True
+            every_priced = False
+            continue
+        total += priced
+    return total, unpriced, every_priced
+
+
+def opening_context(arguments: argparse.Namespace, report: dict[str, Any] | None) -> int | None:
+    if arguments.opening_context is not None:
+        return arguments.opening_context
+    if not arguments.run_folder:
+        return None
+    path = Path(arguments.run_folder) / OPENING_FILE
+    if path.is_file():
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8")).get("contextFirst")
+        except (OSError, ValueError, AttributeError):
+            return None
+        return saved if isinstance(saved, int) and not isinstance(saved, bool) else None
+    parent = (report or {}).get("parent") or {}
+    first = parent.get("contextFirst")
+    if not isinstance(first, int) or isinstance(first, bool):
+        return None
+    try:
+        path.write_text(
+            json.dumps({"contextFirst": first, "since": arguments.since}, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as error:
+        raise CostError(f"cannot write {path}: {error.strerror}") from None
+    return first
+
+
+def not_converging(rounds: Sequence[tuple[str, int, int]]) -> bool:
+    counted = [findings for kind, findings, _ in rounds if kind != "carry"]
+    return len(counted) >= 2 and counted[-1] >= counted[-2]
+
+
+def regressions_twice(rounds: Sequence[tuple[str, int, int]]) -> bool:
+    corrections = [regressions for kind, _, regressions in rounds if kind == "correction"]
+    return len(corrections) >= 2 and corrections[-1] > 0 and corrections[-2] > 0
+
+
+def decide(arguments: argparse.Namespace, counters: dict[str, Any], unpriced: bool) -> str | None:
+    """Return the rule that stops the run, or None to continue."""
+    spend = counters["spend"]
+    if spend >= arguments.absolute_stop:
+        return RULE_ABSOLUTE
+    if arguments.launch_allowance is not None:
+        committed = sum(arguments.outstanding) + arguments.reserve + arguments.launch_allowance
+        if spend + committed >= arguments.absolute_stop:
+            return RULE_ADMISSION
+        # Running workers already took their share of the allowance when they were admitted.
+        needed = arguments.reserve + arguments.launch_allowance
+        if unpriced and (arguments.unpriced_allowance_left is None or needed > arguments.unpriced_allowance_left):
+            return RULE_UNPRICED
+    if arguments.operation == "fix-round":
+        released = arguments.continuing_authorization and arguments.replan_done
+        if regressions_twice(arguments.rounds) and not released:
+            return RULE_DIAGNOSE
+        converging = not not_converging(arguments.rounds)
+        if not converging and not released:
+            return RULE_NOT_CONVERGING
+        if not converging and counters["run_spend"] > arguments.ceiling:
+            return RULE_CEILING
+    return None
+
+
+def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any], str | None]:
+    """Return the verdict, its rule, the counters and any error."""
+    counters: dict[str, Any] = {
+        "requests": UNAVAILABLE,
+        "context_growth": UNAVAILABLE,
+        "opening_context": UNAVAILABLE,
+        "spend": UNAVAILABLE,
+        "run_spend": UNAVAILABLE,
+        "dispatched_spend": UNAVAILABLE,
+        "earlier_spend": arguments.earlier_spend,
+        "outstanding": sum(arguments.outstanding) + arguments.reserve,
+        "launch_allowance": arguments.launch_allowance if arguments.launch_allowance is not None else 0.0,
+        "ceiling": arguments.ceiling,
+        "absolute_stop": arguments.absolute_stop,
+        "coverage": UNAVAILABLE,
+    }
+    report: dict[str, Any] | None = None
+    try:
+        report = load_report(arguments)
+    except CostError as error:
+        try:
+            opening = opening_context(arguments, None)
+        except CostError:
+            opening = None
+        if opening is not None:
+            counters["opening_context"] = opening
+        return "error", None, counters, str(error)
+    parent = report.get("parent") if isinstance(report.get("parent"), dict) else {}
+    combined = report.get("combined") if isinstance(report.get("combined"), dict) else {}
+    requests = parent.get("requests")
+    if isinstance(requests, int) and not isinstance(requests, bool) and parent.get("requestCountExact") is not False:
+        counters["requests"] = requests
+    try:
+        opening = opening_context(arguments, report)
+    except CostError as error:
+        return "error", None, counters, str(error)
+    if opening is not None:
+        counters["opening_context"] = opening
+    peak = parent.get("contextMax")
+    if opening is not None and isinstance(peak, int) and not isinstance(peak, bool):
+        counters["context_growth"] = max(0, peak - opening)
+    unpriced_requests = combined.get("unpricedRequests")
+    incomplete = combined.get("costUsd") is None or combined.get("requestCountExact") is False
+    coverage = combined.get("coverage") or ("incomplete" if incomplete else "complete")
+    # Incomplete coverage blocks admission as unpriced requests do.
+    unpriced = incomplete or not (
+        isinstance(unpriced_requests, int) and not isinstance(unpriced_requests, bool) and unpriced_requests == 0
+    )
+    window = report.get("window") if isinstance(report.get("window"), dict) else {}
+    window_end = window["until"] if "until" in window else arguments.until
+    try:
+        dispatched, dispatched_unpriced, dispatched_priced = (
+            load_dispatched(arguments.dispatched_cost, owned_sources(report), window_end)
+            if arguments.dispatched_cost
+            else (0.0, False, True)
+        )
+    except CostError as error:
+        return "error", None, counters, str(error)
+    if dispatched_unpriced:
+        unpriced = True
+        coverage = "incomplete"
+    counters["coverage"] = coverage
+    priced = number(combined.get("pricedCostUsd"))
+    if priced is None:
+        return "error", None, counters, "the cost report has no combined.pricedCostUsd"
+    counters["run_spend"] = round(priced + dispatched, 4)
+    counters["dispatched_spend"] = round(dispatched, 4) if dispatched_priced else UNAVAILABLE
+    counters["spend"] = round(priced + dispatched + arguments.earlier_spend, 4)
+    rule = decide(arguments, counters, unpriced)
+    return ("stop" if rule else "continue"), rule, counters, None
+
+
+def usd(value: Any) -> str:
+    return UNAVAILABLE if value == UNAVAILABLE else f"{value:.2f} USD"
+
+
+def count(value: Any, unit: str = "") -> str:
+    return UNAVAILABLE if value == UNAVAILABLE else f"{value:,}{unit}"
+
+
+def render_text(verdict: str, rule: str | None, counters: dict[str, Any], error: str | None) -> str:
+    head = f"stop: {rule}" if verdict == "stop" else (f"error: {error}" if verdict == "error" else "continue")
+    lines = [
+        head,
+        f"requests: {count(counters['requests'])}",
+        f"context growth: {count(counters['context_growth'], ' tokens')} above opening {count(counters['opening_context'], ' tokens')}",
+        f"priced spend: {usd(counters['spend'])} (this run {usd(counters['run_spend'])}, of it dispatched {usd(counters['dispatched_spend'])}, earlier runs {usd(counters['earlier_spend'])})",
+        f"outstanding allowances: {usd(counters['outstanding'])}, this launch {usd(counters['launch_allowance'])}",
+        f"ceiling: {usd(counters['ceiling'])}",
+        f"absolute stop: {usd(counters['absolute_stop'])}",
+        f"coverage: {counters['coverage']}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = parse_arguments(argv)
+    verdict, rule, counters, error = build(arguments)
+    if arguments.run_folder:
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        path = Path(arguments.run_folder) / BLOCK_FILE
+        try:
+            with open(path, "a", encoding="utf-8") as log:
+                log.write(f"{stamp} {arguments.operation}\n{render_text(verdict, rule, counters, error)}\n")
+        except OSError as failure:
+            # A block that never reaches the run folder cannot continue the run.
+            if verdict != "error":
+                verdict, rule, error = "error", None, f"cannot write {path}: {failure.strerror}"
+    if arguments.json:
+        output = json.dumps({"verdict": verdict, "rule": rule, "error": error, **counters}, indent=2) + "\n"
+    else:
+        output = render_text(verdict, rule, counters, error)
+    sys.stdout.write(output)
+    return {"continue": 0, "stop": 1}.get(verdict, 2)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -223,7 +223,9 @@ A small coherent task skips the subagents and runs inline, with one reviewer.
 
 **Stopped spend carries into the next run on the same phase.** One plan stopped three times under its ceiling, then landed on a fourth run. It spent 63.70 USD in all, 2.36 times the ceiling, and no end fired, because each run measured only its own spend. Every stop writes the run's spend as one line under its phase in the plan file, in one fixed form that Brief can search for. Each line names its run start, so a run that resumes after a stop replaces its own line and counts its spend once. The earlier spend counts only toward the end at twice the ceiling. Brief sums only the lines under the current phase, because another phase's stops count toward that phase's end.
 
-**Without a price, the request cap is the limit.** Pricing needs the session id and the Arc cost report behind `session-cost-audit`. A reader without either still has the coordinator's request and token limits, and the route line says that no ceiling applies.
+**Without a price, no further paid work starts.** Pricing needs the session id and the Arc cost report behind `session-cost-audit`. The coordinator's request and token limits are checkpoints, so they cannot bound spend on their own. Paid work waits until pricing resolves or the author grants a bounded allowance. The route line says that no ceiling applies.
+
+**A paid launch must fit under the absolute stop with every commitment.** Priced spend, the allowances of running workers, the reserve for verification and Close, and the new launch's allowance must stay under it. Per-group ceilings once let one task's aggregate pass 100 USD, because each group measured only itself.
 
 ## Stops
 
@@ -255,6 +257,14 @@ A small coherent task skips the subagents and runs inline, with one reviewer.
 
 **A round grant changes only the round count it names.** A one-round approval buys one round. An explicit continued or unlimited grant permits a further round after a nonconverging result only with a replan. Diagnosis, scope and the end at twice the ceiling still apply. One run accepted "continue even if it becomes inefficient" and spent 113 USD past its limits.
 
+**`stop-check.py` decides numeric continuation.** An audit of 91 stops across coordinator runs found that the author approved 75 of them. Three earlier rewrites of the stop text did not stop the unneeded asks. The rules named each limit but never said what happens at one, so coordinators stopped. Coordinators do follow a script that prints a verdict, such as `land-preflight.py`. This script reads the Arc cost report and prints `continue` or the stopping rule, then its counters. Its verdict covers numeric limits only, so a product decision, missing authority or a red gate still stops the task. Only 11 of 75 stop messages stated the coordinator's request count, so every stop message now carries the block. A figure the script cannot read prints as `unavailable`, never as zero, because a zero admits spend that nobody measured. `orchestrate` carries its own copy of the script and its test, so it reads no file from another repository.
+
+**An implementer's context overrun alone does not block review of its green commit.** Subagent limits caused 23 stops in that audit, and the author approved 17 of them. A committed green candidate already holds the work, and review shows what remains. The task still never launches a second implementer to finish the first one's work. An implementer that cannot reach a green commit still stops for phases, because that stop carries a scope decision.
+
+**A supplemental reviewer covers a seat that stays incomplete after its resume.** One supplemental reviewer reads the same candidate. The combined reports cover the original assignment and its dependencies, because a reviewer of only the unread files lacks the context around them. Coverage that is still incomplete after the supplement stops the task.
+
+**A low-severity finding on the fix itself does not start another round.** The author ruled that a rare and ignorable edge case is not worth a round. The rule covers only a finding that needs an unusual input or state and touches no data, money or security. Such a finding goes to follow-up work with no test. Ten review-round stops in the audit asked for rounds, and the author approved all ten. In one month of coordinator runs, the 19 runs with five or more rounds were 5% of runs and 21% of spend.
+
 **A stop says where the task stands.** The author answers with the commit SHA, the step, the rounds that remain and what each answer will do in front of them. A question without those asks the author to rebuild the run from memory before answering it.
 
 **No permission is asked for a round the limits allow.** In one audit, the author approved four of five budget stops unchanged, and two tasks sat idle for twelve hours waiting. A stop that the author always approves teaches the author to approve without reading.
@@ -262,6 +272,12 @@ A small coherent task skips the subagents and runs inline, with one reviewer.
 ## Context and delegation
 
 **The coordinator's own context is the largest cost in a task.** Every call re-sends the whole conversation, and one measured turn spent 50.33 USD of 59.00 USD on re-reading history. The coordinator's token limit counts only what it adds above its opening context, because the opening context alone holds tens of thousands of tokens before any work.
+
+**The coordinator's request and token limits are checkpoints, not stops.** They caused 33 stops in the audit, and the author approved 26 of them, including all 10 request stops. One session asked four times in about 4.5 hours to raise the request limit, from 50 to 100, 150, 200 and 250. A checkpoint carries no decision for the author. The dollar ceiling already prices the coordinator, because `combined.pricedCostUsd` includes it, so the spend these limits guard stays bounded. The limits remain as checkpoints because one audit found 79% of coordinators past 50 requests across 29 sessions, with 207.56 USD of excess requests. Setup reads count as growth. One coordinator grew from 29,609 to 107,887 tokens in 14 setup requests and stopped before any implementer launched, so bulk setup reads go to a subagent at once. `stop-check.py` saves the opening context in the run folder at Brief, because Arc's `contextFirst` follows the pricing window and a later window cannot recover it.
+
+**Waits never poll.** In the audit, 42 stopped runs were waiting on qualification or test runs, and 17 on a rebase onto a changed main. One coordinator passed its request limit during qualification waits. Every poll re-sends the whole conversation. A host completion event, or a background command with a deadline that notifies on exit, spends no request while it waits.
+
+**A calling workflow's verification limits bind `delegate`.** `delegate` asks the author before any further premium verification round. A calling workflow such as `orchestrate` runs a converging round without asking, and that default would stop it. `delegate` keeps its defaults and its compaction handoffs when it runs alone.
 
 **The coordinator keeps its narration short.** Its own output is the largest single source of its growth, ahead of tool results and far ahead of subagent reports. Cutting requests cuts all three.
 
