@@ -9,6 +9,14 @@ stop condition in the calling workflow still binds.
 The cost source is the Arc report from session-cost-audit's arc_cost.py, schema version 2.
 Pass --cost-json to read a saved report instead of running arc_cost.py.
 
+The cache_expiry line reports the report's combined cacheExpiry.extraCostAfterExpiryUsd: what
+requests that returned after their prompt cache expired paid to resend the previous context,
+beyond a cache read of the same tokens. It reads unknown when the report lacks that figure or its
+coverage is incomplete. Dispatched sources carry no cache-expiry figure, so the line counts the
+Arc report's sessions only. The line ends with flag: true when the premium passes 2 USD or 10
+percent of the run's priced spend, flag: false below both, and flag: unknown when the premium is
+unknown.
+
 Exit 0 means continue, 1 means stop, and 2 means an error. On exit 2 the counter block still
 prints, and each figure the script cannot read shows as unavailable.
 """
@@ -26,6 +34,10 @@ from typing import Any, Sequence
 
 SCHEMA_VERSION = 2
 UNAVAILABLE = "unavailable"
+UNKNOWN = "unknown"
+# A rebuild premium above either threshold sets flag: true on the cache_expiry line.
+EXPIRY_FLAG_USD = 2.0
+EXPIRY_FLAG_SHARE = 0.10
 OPENING_FILE = "stop-check-opening.json"
 BLOCK_FILE = "stop-check.txt"
 OPERATIONS = (
@@ -245,6 +257,55 @@ def opening_context(arguments: argparse.Namespace, report: dict[str, Any] | None
     return first
 
 
+def whole(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def expiry_premium(summary: Any) -> tuple[float, int] | None:
+    """Return a summary's rebuild premium after cache expiry and its returns, or None when the
+    summary lacks either figure or its coverage is incomplete."""
+    expiry = summary.get("cacheExpiry") if isinstance(summary, dict) else None
+    if not isinstance(expiry, dict) or expiry.get("coverage") != "complete":
+        return None
+    premium = number(expiry.get("extraCostAfterExpiryUsd"))
+    returns = whole(expiry.get("returns"))
+    if premium is None or returns is None:
+        return None
+    return premium, returns
+
+
+def cache_expiry(report: dict[str, Any], run_spend: float) -> dict[str, Any] | str:
+    """Return the run's rebuild premium after cache expiry, or unknown."""
+    combined = report.get("combined") if isinstance(report.get("combined"), dict) else {}
+    if combined.get("costUsd") is None or combined.get("requestCountExact") is False:
+        return UNKNOWN
+    total = expiry_premium(combined)
+    if total is None:
+        return UNKNOWN
+    premium, returns = total
+    largest: dict[str, Any] | str | None = None
+    for child in report.get("children") or []:
+        figure = expiry_premium(child)
+        if figure is None or not isinstance(child, dict) or not child.get("sessionId"):
+            largest = UNKNOWN
+            break
+        if figure[0] > 0 and (largest is None or figure[0] > largest["premium_usd"]):
+            largest = {"session": str(child["sessionId"]), "premium_usd": round(figure[0], 4)}
+    if run_spend > 0:
+        share = premium / run_spend
+    elif premium == 0:
+        share = 0.0
+    else:
+        return UNKNOWN
+    return {
+        "premium_usd": round(premium, 4),
+        "returns": returns,
+        "share": round(share, 4),
+        "largest_child": largest,
+        "flag": premium > EXPIRY_FLAG_USD or share > EXPIRY_FLAG_SHARE,
+    }
+
+
 def not_converging(rounds: Sequence[tuple[str, int, int]]) -> bool:
     counted = [findings for kind, findings, _ in rounds if kind != "carry"]
     return len(counted) >= 2 and counted[-1] >= counted[-2]
@@ -295,6 +356,7 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
         "ceiling": arguments.ceiling,
         "absolute_stop": arguments.absolute_stop,
         "coverage": UNAVAILABLE,
+        "cache_expiry": UNKNOWN,
     }
     report: dict[str, Any] | None = None
     try:
@@ -348,6 +410,7 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
     counters["run_spend"] = round(priced + dispatched, 4)
     counters["dispatched_spend"] = round(dispatched, 4) if dispatched_priced else UNAVAILABLE
     counters["spend"] = round(priced + dispatched + arguments.earlier_spend, 4)
+    counters["cache_expiry"] = cache_expiry(report, priced + dispatched)
     rule = decide(arguments, counters, unpriced)
     return ("stop" if rule else "continue"), rule, counters, None
 
@@ -358,6 +421,21 @@ def usd(value: Any) -> str:
 
 def count(value: Any, unit: str = "") -> str:
     return UNAVAILABLE if value == UNAVAILABLE else f"{value:,}{unit}"
+
+
+def expiry_text(value: Any) -> str:
+    if not isinstance(value, dict):
+        return f"{UNKNOWN}, flag: {UNKNOWN}"
+    largest = value["largest_child"]
+    if isinstance(largest, dict):
+        child = f"{largest['session']} {usd(largest['premium_usd'])}"
+    else:
+        child = UNKNOWN if largest == UNKNOWN else "none"
+    return (
+        f"{usd(value['premium_usd'])} over {count(value['returns'])} returns, "
+        f"{value['share'] * 100:.1f}% of this run's priced spend, largest child {child}, "
+        f"flag: {'true' if value['flag'] else 'false'}"
+    )
 
 
 def error_head(error: str | None, rule: str | None) -> str:
@@ -375,6 +453,7 @@ def render_text(verdict: str, rule: str | None, counters: dict[str, Any], error:
         f"ceiling: {usd(counters['ceiling'])}",
         f"absolute stop: {usd(counters['absolute_stop'])}",
         f"coverage: {counters['coverage']}",
+        f"cache_expiry: {expiry_text(counters['cache_expiry'])}",
     ]
     return "\n".join(lines) + "\n"
 

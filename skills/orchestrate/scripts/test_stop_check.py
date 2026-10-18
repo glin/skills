@@ -266,6 +266,46 @@ class StopCheckTests(unittest.TestCase):
         with open(os.path.join(folder, "stop-check.txt"), encoding="utf-8") as log:
             self.assertEqual(log.read().count("\ncontinue\n"), 2)
 
+    def test_cache_expiry_names_the_rebuild_premium_and_the_largest_child(self) -> None:
+        def expiry(returns: int, premium: float | None, coverage: str = "complete") -> dict:
+            return {"coverage": coverage, "returns": returns, "extraCostAfterExpiryUsd": premium,
+                    "inputCostAfterExpiryUsd": None if premium is None else premium + 1.0}
+
+        fixture = report(priced=50.0, children=("waiting-reviewer", "quick-reviewer"))
+        fixture["children"][0]["cacheExpiry"] = expiry(24, 28.0)
+        fixture["children"][1]["cacheExpiry"] = expiry(1, 0.5)
+        fixture["combined"]["cacheExpiry"] = expiry(25, 28.5)
+        code, lines = self.run_script(fixture, "--ceiling", "60")
+        self.assert_verdict(code, lines, "continue")
+        self.assertEqual(
+            lines[-1],
+            "cache_expiry: 28.50 USD over 25 returns, 57.0% of this run's priced spend, "
+            "largest child waiting-reviewer 28.00 USD, flag: true",
+        )
+        # Each threshold sets the flag alone, and a premium below both clears it.
+        for name, priced, premium, share, flag in (
+            ("share alone", 10.0, 1.5, "15.0%", "true"),
+            ("dollars alone", 100.0, 3.0, "3.0%", "true"),
+            ("neither", 50.0, 1.5, "3.0%", "false"),
+        ):
+            with self.subTest(name):
+                small = report(priced=priced, children=("quick-reviewer",))
+                small["children"][0]["cacheExpiry"] = expiry(2, premium)
+                small["combined"]["cacheExpiry"] = expiry(2, premium)
+                code, lines = self.run_script(small, "--ceiling", "300")
+                self.assertEqual(
+                    lines[-1],
+                    f"cache_expiry: {premium:.2f} USD over 2 returns, {share} of this run's priced spend, "
+                    f"largest child quick-reviewer {premium:.2f} USD, flag: {flag}",
+                )
+        unknown_coverage = json.loads(json.dumps(fixture))
+        unknown_coverage["combined"]["cacheExpiry"] = expiry(25, None, "unknown-request-coverage")
+        for name, case in (("no cacheExpiry", report(priced=50.0)), ("coverage incomplete", unknown_coverage)):
+            with self.subTest(name):
+                code, lines = self.run_script(case, "--ceiling", "60")
+                self.assert_verdict(code, lines, "continue")
+                self.assertEqual(lines[-1], "cache_expiry: unknown, flag: unknown")
+
     def test_pricing_failure_exits_2_and_prints_unavailable_fields(self) -> None:
         failing = self.write("arc_cost.py", "import sys\nsys.exit('Arc cost command is unavailable.')\n")
         code, lines = self.run_script(
@@ -277,6 +317,7 @@ class StopCheckTests(unittest.TestCase):
         self.assertIn("requests: unavailable", lines)
         self.assertIn("context growth: unavailable above opening unavailable", lines)
         self.assertIn("coverage: unavailable", lines)
+        self.assertIn("cache_expiry: unknown, flag: unknown", lines)
         self.assertTrue(any(line.startswith("priced spend: unavailable") for line in lines), lines)
 
 
