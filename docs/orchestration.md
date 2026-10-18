@@ -18,6 +18,8 @@ Ownership changes can drop visible effects despite preserving return values. The
 
 Reports, review inputs, and run logs belong under the owning plan's `runs/` directory. Tasks without a plan use `.claude/plans/runs/` in the main checkout. Separate log directories require additional ignore rules and separate evidence from its plan. Keeping run evidence outside candidate worktrees also prevents saved source copies from entering candidate checks. Record each created directory in the plan's runtime resources, and preserve its location across continuation. Raw logs, source copies, and generated captures stay outside plan history.
 
+**Capture the loaded instructions before implementation.** Another session can change the deployed skill before the candidate exists. A later source identity then describes instructions the coordinator never loaded. Saving the loaded bytes at Brief binds the run to its actual instructions. Candidate creation, delivery and continuation retain the same verified source identity. Exclusive run-folder creation keeps concurrent invocations from sharing evidence before either produces a candidate.
+
 ## Workflow session names
 
 Job and round belong before the topic so narrow session rows distinguish an initial review from a review of corrected work. A bare `focused` suffix describes coverage but does not identify the review round. The convention lives in `skills/references/session-naming.md`, shared by dispatch and native worker launches. Existing name fields carry it without launcher changes. Attempt suffixes distinguish coverage continuations and launch retries without spending review rounds. Workflow counters, artifact paths, and controlled-comparison prompts keep their existing meanings.
