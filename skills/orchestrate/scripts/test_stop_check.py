@@ -279,9 +279,17 @@ class StopCheckTests(unittest.TestCase):
         self.assert_verdict(code, lines, "continue")
         self.assertEqual(
             lines[-1],
-            "cache_expiry: 28.50 USD over 25 returns, 57.0% of this run's priced spend, "
+            "cache_expiry: 28.50 USD over 25 returns, 57.0% of the Arc report's priced spend, "
             "largest child waiting-reviewer 28.00 USD, flag: true",
         )
+        # Dispatched spend carries no premium, so it stays out of the share.
+        dispatched = self.write("dispatched-cost.json", {"sources": [
+            {"sessionId": "codex-review", "pricedCostUsd": 50.0, "costUsd": 50.0,
+             "since": "2026-01-01T00:00:00Z", "until": "2026-01-01T01:00:00Z"},
+        ]})
+        fixture["window"]["until"] = "2026-01-01T01:00:00Z"
+        code, lines = self.run_script(fixture, "--ceiling", "200", "--dispatched-cost", dispatched)
+        self.assertIn("57.0% of the Arc report's priced spend", lines[-1])
         # Each threshold sets the flag alone, and a premium below both clears it.
         for name, priced, premium, share, flag in (
             ("share alone", 10.0, 1.5, "15.0%", "true"),
@@ -295,7 +303,7 @@ class StopCheckTests(unittest.TestCase):
                 code, lines = self.run_script(small, "--ceiling", "300")
                 self.assertEqual(
                     lines[-1],
-                    f"cache_expiry: {premium:.2f} USD over 2 returns, {share} of this run's priced spend, "
+                    f"cache_expiry: {premium:.2f} USD over 2 returns, {share} of the Arc report's priced spend, "
                     f"largest child quick-reviewer {premium:.2f} USD, flag: {flag}",
                 )
         unknown_coverage = json.loads(json.dumps(fixture))

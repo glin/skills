@@ -410,7 +410,7 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
     counters["run_spend"] = round(priced + dispatched, 4)
     counters["dispatched_spend"] = round(dispatched, 4) if dispatched_priced else UNAVAILABLE
     counters["spend"] = round(priced + dispatched + arguments.earlier_spend, 4)
-    counters["cache_expiry"] = cache_expiry(report, priced + dispatched)
+    counters["cache_expiry"] = cache_expiry(report, priced)
     rule = decide(arguments, counters, unpriced)
     return ("stop" if rule else "continue"), rule, counters, None
 
@@ -433,7 +433,7 @@ def expiry_text(value: Any) -> str:
         child = UNKNOWN if largest == UNKNOWN else "none"
     return (
         f"{usd(value['premium_usd'])} over {count(value['returns'])} returns, "
-        f"{value['share'] * 100:.1f}% of this run's priced spend, largest child {child}, "
+        f"{value['share'] * 100:.1f}% of the Arc report's priced spend, largest child {child}, "
         f"flag: {'true' if value['flag'] else 'false'}"
     )
 

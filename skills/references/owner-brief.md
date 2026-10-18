@@ -26,13 +26,13 @@ Record the pending metadata and report the limitation alongside the verified lin
 
 ## Waits and the cache lifetime
 
-A Claude subagent's prompt cache lasts 5 minutes by default, and so does a Claude session that `dispatch` starts. A request after a longer gap rebuilds the whole context at the cache write price. That write costs 12.5 to 50 times the read price, depending on the model. Codex caches for a fixed 30 minutes. The full price table and the lifetime controls are in `~/.claude/docs/llm-cost-and-caching.md`.
+A Claude subagent's prompt cache lasts 5 minutes by default, and so does a Claude session that `dispatch` starts. A request after a longer gap rebuilds the whole context at the cache write price. That write costs 12.5 to 50 times the read price, depending on the model. Current Codex models such as GPT-6.1 Sol cache for a documented 30 minutes, and older models differ. The full price table and the lifetime controls are in `~/.claude/docs/llm-cost-and-caching.md`.
 
 Tell every worker that waits for a build, a test run or a measurement which of these rules it follows:
 
-- A worker whose result is a file starts the long job in the background and returns. The coordinator receives the exit notice and launches a fresh worker to read the result.
-- A worker that must wait in its own context ends each wait in under 270 seconds. Each return reads the cache and keeps it alive, at a small fraction of a rebuild. This is the one exception to the rule that a coordinator never polls, and it binds only a worker that cannot return before its result exists.
-- A worker with an unavoidable wait of 5 to 60 minutes launches as `subagent_type: long-wait`, whose definition sets a 1-hour cache. One expected gap pays for the higher write price. A subscription in overage silently drops it to 5 minutes, so it still ends each wait in under 270 seconds when it can.
+- A worker whose result is a file starts the long job in the background and returns. Use this only when the host notifies the coordinator on exit and the job outlives the worker. The coordinator then launches a fresh worker to read the result.
+- A worker that must wait in its own context ends each wait in under 270 seconds. Its next model request reads the cache and resets the timer, at a small fraction of a rebuild. The 5 minutes run from request to request, so the wait leaves room for the model's own time. This is the one exception to the rule that a coordinator never polls, and it binds only a worker that cannot return before its result exists.
+- A worker with an unavoidable wait of 5 to 60 minutes launches as `subagent_type: long-wait`, whose definition sets a 1-hour cache when no session-wide setting overrides it. One expected gap pays for the higher write price. A subscription in overage silently drops it to 5 minutes, so it still ends each wait in under 270 seconds when it can.
 
 A coordinator cannot keep a worker's cache alive from outside. A worker blocked inside a tool call reads no message until that call returns. Do not set `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` or `subagentPromptCacheTtl` for one worker, because each applies to every subagent of the session. For a dispatched Claude session with long waits, set `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` in the environment of the `dispatch.py` command.
 
@@ -40,10 +40,10 @@ A coordinator cannot keep a worker's cache alive from outside. A worker blocked 
 
 When a brief asks for an acceptance rule that is frozen before candidate results, the worker does these steps before the freeze commit:
 
-- Pilot every gated metric on the baseline. A bound must be wider than that metric's spread between two baseline launches, or the metric is reported and not gated.
-- Prove in the pilot that each scenario runs the changed code, with a log line or a counter from the changed path.
+- Pilot every gated metric on the baseline, with enough launches to estimate its noise. A bound must be wider than that noise, or the metric is reported and not gated.
+- Prove that each scenario runs the workload the change touches, with a log line or a counter. Show it for the baseline path and for the candidate's new path.
 - List each required scenario with its trigger, the work it runs and its evidence path. A scenario with no evidence blocks acceptance unless the owner changes the scope.
-- Hold every load that moves a gated metric equal in both arms, including test runs from other sessions, and record that load in each launch.
+- Record every load that moves a gated metric in each launch, including test runs from other sessions. Reject a launch whose load exceeds the protocol's limit.
 - Retry a launch whose instrument failed, as for a machine failure. It never counts against either arm.
 
-The coordinator then launches a read-only reviewer to check the protocol against this list. The freeze commit waits for that check.
+When the measurement will run for more than an hour, the coordinator launches a read-only reviewer to check the protocol against this list. The freeze commit waits for that check.
