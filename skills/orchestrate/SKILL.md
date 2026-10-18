@@ -171,6 +171,10 @@ Close runs on every exit: a landing, a stop, a ceiling and a failure. First run 
 
 When the task has a plan file, record the follow-up work in it without asking, by the plan-edit rule in Stops. When that rule commits on the topic branch, record the follow-up work before the plan commit, so the branch carries it. At a stop, the follow-up work joins the uncommitted plan edit. When the task wrote into a plan folder, list its files over 2 MB with `find <plan folder> -type f -size +2M -not -path '*/.git/*'`. Extract, gzip or delete each one under the plan convention's archive rule. A branch that needs `git branch -D` gets a force-delete request only after `git merge-base --is-ancestor <landed SHA> <target>` confirms the landing. The request names the landed SHA, the reviewed commits the target now holds, and the grant. The grant is the author's instruction to deliver to that target.
 
+The final report of a stopped task opens with the goal's state in product words: what improved, what stays unproven, and why. It then names the branch and the plan section the next run resumes from. It never advises archiving, compacting or closing the session while the goal is unfinished.
+
+At Close, read the `cache_expiry` line of the last `stop-check.py` block. When that line shows `flag: true`, the final report names the child, its longest gap and the wait that caused it. It says whether the brief applied Waits and the cache lifetime in [../references/owner-brief.md](../references/owner-brief.md). When the brief applied it, the report also carries a reflection candidate, because that rule did not prevent the waste.
+
 ## When the target moved
 
 A reviewed commit does not become unreviewed because the target branch moved. It becomes unreviewed when the target changed something the candidate depends on.
