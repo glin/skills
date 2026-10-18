@@ -308,11 +308,193 @@ class StopCheckTests(unittest.TestCase):
                 )
         unknown_coverage = json.loads(json.dumps(fixture))
         unknown_coverage["combined"]["cacheExpiry"] = expiry(25, None, "unknown-request-coverage")
-        for name, case in (("no cacheExpiry", report(priced=50.0)), ("coverage incomplete", unknown_coverage)):
+        partial_cost = json.loads(json.dumps(small))
+        partial_cost["combined"]["costUsd"] = None
+        for name, case, expected in (
+            ("no cacheExpiry", report(priced=50.0), "unknown, flag: unknown"),
+            ("coverage incomplete", unknown_coverage,
+             "unknown (25 returns, premium unpriced: unknown-request-coverage), flag: unknown"),
+            ("combined cost incomplete", partial_cost,
+             "unknown (2 returns, partial premium 1.5000 USD, combined cost incomplete), flag: unknown"),
+        ):
             with self.subTest(name):
                 code, lines = self.run_script(case, "--ceiling", "60")
                 self.assert_verdict(code, lines, "continue")
-                self.assertEqual(lines[-1], "cache_expiry: unknown, flag: unknown")
+                self.assertEqual(lines[-1], f"cache_expiry: {expected}")
+
+    def test_saved_codex_report_shows_identified_requests_and_why_figures_are_unknown(self) -> None:
+        # Minimized from the codex-skill-011245 run's qualification-5-run-cost.json.
+        def codex_report(defect: bool) -> dict:
+            expiry = {"coverage": "unknown-request-coverage", "returns": 3, "inputCostAfterExpiryUsd": None,
+                      "extraCostAfterExpiryUsd": None, "byLifetime": {"5m": 0, "30m": 3, "1h": 0},
+                      "longestGapSeconds": 4303}
+            parent = {"requests": 450, "pricedRequests": 450, "unpricedRequests": 0, "requestCountExact": False,
+                      "coverage": "billed-with-unknown-coverage", "costUsd": None, "pricedCostUsd": 13.064,
+                      "contextMean": None, "contextMax": None, "contextFirst": None, "unpricedModels": [],
+                      "cacheExpiry": dict(expiry, returns=1, byLifetime={"5m": 0, "30m": 1, "1h": 0})}
+            if defect:
+                parent["coverageDefect"] = {"kind": "billed-with-unknown-coverage",
+                                            "since": "2026-10-18T02:32:51.021Z", "cause": "compaction-unmatched"}
+            child = {"sessionId": "01a14ca0", "requests": 18, "unpricedRequests": 0, "coverage": "recorded-reconciled",
+                     "costUsd": 2.8809, "pricedCostUsd": 2.8809, "contextMax": 120902, "unpricedModels": []}
+            return {
+                "schemaVersion": 2,
+                "source": {"kind": "codex", "sessionId": "01a14c8e"},
+                "window": {"since": "2026-10-18T01:09:19.000Z", "until": "2026-10-18T08:14:26.000Z"},
+                "parent": parent,
+                "children": [child],
+                "combined": {"requests": 468, "unpricedRequests": 0, "requestCountExact": False,
+                             "coverage": "billed-with-unknown-coverage", "costUsd": None, "pricedCostUsd": 15.9449,
+                             "unpricedModels": [], "cacheExpiry": expiry},
+            }
+
+        window = ("--since", "2026-10-18T01:09:19Z", "--until", "2026-10-18T08:14:26Z")
+        for name, defect, detail in (
+            ("with coverageDefect", True,
+             "parent billed-with-unknown-coverage since 2026-10-18T02:32:51.021Z (compaction-unmatched)"),
+            ("older report", False, "parent billed-with-unknown-coverage"),
+        ):
+            with self.subTest(name):
+                code, lines = self.run_script(
+                    codex_report(defect), "--ceiling", "40", "--opening-context", "28667",
+                    "--arc-cost", "C:/skills/arc_cost.py", *window,
+                )
+                self.assert_verdict(code, lines, "continue")
+                self.assertIn("requests: 450 identified, count not exact", lines)
+                self.assertIn(
+                    "context growth: unavailable above opening 28,667 tokens "
+                    "(parent coverage billed-with-unknown-coverage)",
+                    lines,
+                )
+                self.assertIn(
+                    "priced spend: 15.94 USD (this run 15.94 USD, of it dispatched 0.00 USD, earlier runs 0.00 USD)",
+                    lines,
+                )
+                self.assertIn("coverage: billed-with-unknown-coverage", lines)
+                shown = [line for line in lines if line.startswith("coverage detail: ")]
+                self.assertEqual(len(shown), 1, lines)
+                self.assertTrue(
+                    shown[0].startswith(f"coverage detail: {detail}, 1 of 1 children with complete coverage. Reproduce: "),
+                    shown[0],
+                )
+                self.assertTrue(
+                    shown[0].endswith(
+                        '"C:/skills/arc_cost.py" 01a14c8e --since 2026-10-18T01:09:19Z --until 2026-10-18T08:14:26Z'
+                    ),
+                    shown[0],
+                )
+                self.assertEqual(
+                    lines[-1],
+                    "cache_expiry: unknown (3 returns after 30m lifetimes, longest 4303 s, "
+                    "premium unpriced: unknown-request-coverage), flag: unknown",
+                )
+        # The display lines move no gate and no ledger figure.
+        code, lines = self.run_script(codex_report(True), "--ceiling", "40", "--launch-allowance", "2", *window)
+        self.assert_verdict(code, lines, "stop: unpriced usage blocks paid work")
+        code, lines = self.run_script(
+            codex_report(True), "--ceiling", "40", "--launch-allowance", "2", "--opening-context", "28667",
+            "--json", *window,
+        )
+        figures = json.loads("\n".join(lines))
+        self.assertEqual(code, 1, lines)
+        self.assertEqual(figures["rule"], "unpriced usage blocks paid work")
+        for key, value in (("requests", "unavailable"), ("context_growth", "unavailable"), ("cache_expiry", "unknown"),
+                           ("spend", 15.9449), ("coverage", "billed-with-unknown-coverage")):
+            self.assertEqual(figures[key], value, key)
+
+    def test_request_qualifiers_follow_the_parent_coverage(self) -> None:
+        for coverage, expected in (
+            ("legacy-snapshots", "requests: 12 observed snapshots, count not exact"),
+            ("recorded-gaps", "requests: 12 identified, count not exact"),
+            ("unknown-request-coverage", "requests: unavailable (parent coverage unknown-request-coverage)"),
+        ):
+            with self.subTest(coverage):
+                fixture = report(requests=12, request_count_exact=False)
+                fixture["parent"]["coverage"] = coverage
+                fixture["combined"]["coverage"] = coverage
+                fixture["combined"]["costUsd"] = None
+                if coverage == "legacy-snapshots":
+                    fixture["parent"]["coverageDefect"] = {"kind": coverage, "since": None, "cause": "legacy-snapshots"}
+                code, lines = self.run_script(fixture, "--ceiling", "20")
+                self.assert_verdict(code, lines, "continue")
+                self.assertIn(expected, lines)
+                if coverage == "legacy-snapshots":
+                    self.assertTrue(
+                        any(line.startswith("coverage detail: parent legacy-snapshots (legacy-snapshots). ")
+                            for line in lines),
+                        lines,
+                    )
+
+    def test_unpriced_models_name_the_coverage_detail(self) -> None:
+        fixture = report(priced=5.0, unpriced_requests=2)
+        fixture["combined"]["unpricedModels"] = ["gpt-9-preview"]
+        code, lines = self.run_script(fixture, "--ceiling", "20", "--since", "2026-01-01T00:00:00Z")
+        self.assert_verdict(code, lines, "continue")
+        self.assertTrue(
+            any(line.startswith("coverage detail: 2 unpriced requests from gpt-9-preview. Reproduce: ")
+                for line in lines),
+            lines,
+        )
+
+    def test_a_child_without_coverage_but_with_an_inexact_count_is_not_complete(self) -> None:
+        fixture = report(priced=5.0, unpriced_requests=2)
+        fixture["children"] = [
+            {"sessionId": "old1", "requests": 4, "requestCountExact": False, "pricedCostUsd": 0.0},
+            {"sessionId": "old2", "requests": 3, "costUsd": None, "pricedCostUsd": 0.0},
+            {"sessionId": "good", "requests": 2, "coverage": "recorded-reconciled", "costUsd": 1.0,
+             "pricedCostUsd": 1.0},
+        ]
+        code, lines = self.run_script(fixture, "--ceiling", "20", "--since", "2026-01-01T00:00:00Z")
+        self.assert_verdict(code, lines, "continue")
+        self.assertTrue(
+            any(line.startswith(
+                "coverage detail: child old1 coverage unknown (request count not exact), "
+                "child old2 coverage unknown (cost unpriced), 2 unpriced requests, "
+                "1 of 3 children with complete coverage. Reproduce: ") for line in lines),
+            lines,
+        )
+
+    def test_an_empty_window_prices_at_zero_unless_a_coverage_defect_intersects_it(self) -> None:
+        # Arc's output for a window that holds no request and no coverage defect.
+        expiry = {"coverage": "complete", "returns": 0, "inputCostAfterExpiryUsd": 0, "extraCostAfterExpiryUsd": 0,
+                  "byLifetime": {"5m": 0, "30m": 0, "1h": 0}, "longestGapSeconds": None, "largest": []}
+        empty = {"requests": 0, "pricedRequests": 0, "unpricedRequests": 0, "failedToolCalls": 0,
+                 "failedToolCallRequests": 0, "failedToolCallCostUsd": 0, "fastModeUnpricedRequests": 0,
+                 "cacheExpiry": expiry}
+        fixture = {"schemaVersion": 2, "source": {"kind": "claude", "sessionId": "coordinator"},
+                   "window": {"since": "2026-10-18T11:06:07.000Z", "until": None},
+                   "parent": dict(empty), "children": [], "combined": dict(empty)}
+        for arguments in ((), ("--launch-allowance", "4")):
+            with self.subTest(arguments=arguments):
+                code, lines = self.run_script(fixture, "--ceiling", "40", *arguments)
+                self.assert_verdict(code, lines, "continue")
+                self.assertIn("requests: 0", lines)
+                self.assertIn(
+                    "priced spend: 0.00 USD (this run 0.00 USD, of it dispatched 0.00 USD, earlier runs 0.00 USD)",
+                    lines,
+                )
+                self.assertIn("coverage: complete", lines)
+                self.assertEqual(
+                    lines[-1],
+                    "cache_expiry: 0.00 USD over 0 returns, 0.0% of the Arc report's priced spend, "
+                    "largest child none, flag: false",
+                )
+        # An intersecting defect keeps a null total and an uncertain count with no selected request.
+        defect = json.loads(json.dumps(fixture))
+        for summary in (defect["parent"], defect["combined"]):
+            summary.update({"coverage": "billed-with-unknown-coverage", "requestCountExact": False, "costUsd": None})
+        defect["parent"]["coverageDefect"] = {"kind": "billed-with-unknown-coverage",
+                                              "since": "2026-10-18T10:58:00.000Z", "cause": "snapshot-unmatched"}
+        code, lines = self.run_script(defect, "--ceiling", "40")
+        self.assertEqual(code, 2, lines)
+        self.assertEqual(lines[0], "error: the cost report has no combined.pricedCostUsd")
+        self.assertTrue(any(line.startswith("priced spend: unavailable") for line in lines), lines)
+        self.assertIn("coverage: billed-with-unknown-coverage", lines)
+        self.assertTrue(
+            any(line.startswith("coverage detail: parent billed-with-unknown-coverage since 2026-10-18T10:58:00.000Z "
+                                "(snapshot-unmatched). Reproduce: ") for line in lines),
+            lines,
+        )
 
     def test_pricing_failure_exits_2_and_prints_unavailable_fields(self) -> None:
         failing = self.write("arc_cost.py", "import sys\nsys.exit('Arc cost command is unavailable.')\n")

@@ -173,7 +173,7 @@ When the task has a plan file, record the follow-up work in it without asking, b
 
 The final report of a stopped task opens with the goal's state in product words: what improved, what stays unproven, and why. It then names the branch and the plan section the next run resumes from. It never advises archiving or closing the session while the goal is unfinished.
 
-When a spend check shows `flag: true` during the task, name the wait that caused it in the next worker brief and change it. At Close, run `stop-check.py` against the final pricing report and read its `cache_expiry` line. When that line shows `flag: true`, the final report names the child, its longest gap and the wait that caused it. It says whether the brief applied Waits and the cache lifetime in [../references/owner-brief.md](../references/owner-brief.md). When the brief applied it, the report also carries a reflection candidate, because that rule did not prevent the waste.
+When a spend check shows `flag: true` during the task, name the wait that caused it in the next worker brief and change it. At Close, run `stop-check.py` against the final pricing report and read its `cache_expiry` line. Copy its `requests`, `context growth`, `coverage`, `coverage detail` and `cache_expiry` lines into the final report as printed. Never write `unknown` for a figure those lines show. When that line shows `flag: true`, the final report names the child, its longest gap and the wait that caused it. It says whether the brief applied Waits and the cache lifetime in [../references/owner-brief.md](../references/owner-brief.md). When the brief applied it, the report also carries a reflection candidate, because that rule did not prevent the waste.
 
 ## When the target moved
 

@@ -12,10 +12,22 @@ Pass --cost-json to read a saved report instead of running arc_cost.py.
 The cache_expiry line reports the report's combined cacheExpiry.extraCostAfterExpiryUsd: what
 requests that returned after their prompt cache expired paid to resend the previous context,
 beyond a cache read of the same tokens. It reads unknown when the report lacks that figure or its
-coverage is incomplete. Dispatched sources carry no cache-expiry figure, so the line counts the
-Arc report's sessions only. The line ends with flag: true when the premium passes 2 USD or 10
-percent of the run's priced spend, flag: false below both, and flag: unknown when the premium is
-unknown.
+coverage is incomplete. An unknown premium still lists the returns, their cache lifetimes, the
+longest gap and the reason the premium is unpriced. Dispatched sources carry no cache-expiry
+figure, so the line counts the Arc report's sessions only. The line ends with flag: true when the
+premium passes 2 USD or 10 percent of the run's priced spend, flag: false below both, and flag:
+unknown when the premium is unknown.
+
+A request count that Arc marks as not exact prints with its qualifier: identified bills or
+observed snapshots. The request counter itself stays unavailable, so a ledger figure never takes
+a partial count. When usage is unpriced, a coverage detail line names each summary that is not
+reconciled, where its unresolved interval starts and why, any unpriced models, and the arc_cost.py
+command that reproduces the report. A child without a coverage class counts as complete only when
+its request count is exact and its cost is priced. Otherwise the line names it as coverage unknown.
+These display lines never change the verdict.
+
+An empty window that Arc reports without coverage fields and without cost fields prices at 0 USD
+with complete coverage. An empty window with a coverage defect stays unpriced.
 
 Exit 0 means continue, 1 means stop, and 2 means an error. On exit 2 the counter block still
 prints, and each figure the script cannot read shows as unavailable.
@@ -38,6 +50,9 @@ UNKNOWN = "unknown"
 # A rebuild premium above either threshold sets flag: true on the cache_expiry line.
 EXPIRY_FLAG_USD = 2.0
 EXPIRY_FLAG_SHARE = 0.10
+# Arc coverage classes whose request counts are bills with known response IDs.
+IDENTIFIED_COVERAGE = ("recorded-reconciled", "recorded-gaps", "billed-with-unknown-coverage")
+LEGACY_COVERAGE = "legacy-snapshots"
 OPENING_FILE = "stop-check-opening.json"
 BLOCK_FILE = "stop-check.txt"
 OPERATIONS = (
@@ -274,10 +289,10 @@ def expiry_premium(summary: Any) -> tuple[float, int] | None:
     return premium, returns
 
 
-def cache_expiry(report: dict[str, Any], run_spend: float) -> dict[str, Any] | str:
+def cache_expiry(report: dict[str, Any], run_spend: float, incomplete: bool) -> dict[str, Any] | str:
     """Return the run's rebuild premium after cache expiry, or unknown."""
     combined = report.get("combined") if isinstance(report.get("combined"), dict) else {}
-    if combined.get("costUsd") is None or combined.get("requestCountExact") is False:
+    if incomplete:
         return UNKNOWN
     total = expiry_premium(combined)
     if total is None:
@@ -304,6 +319,130 @@ def cache_expiry(report: dict[str, Any], run_spend: float) -> dict[str, Any] | s
         "largest_child": largest,
         "flag": premium > EXPIRY_FLAG_USD or share > EXPIRY_FLAG_SHARE,
     }
+
+
+def empty_and_complete(combined: dict[str, Any]) -> bool:
+    """Arc omits coverage and cost fields for an empty window that no coverage defect intersects."""
+    return (
+        whole(combined.get("requests")) == 0
+        and whole(combined.get("unpricedRequests")) == 0
+        and combined.get("coverage") is None
+        and combined.get("requestCountExact") is not False
+        and "costUsd" not in combined
+        and "pricedCostUsd" not in combined
+    )
+
+
+def requests_shown(parent: dict[str, Any]) -> str | None:
+    """Return the parent's request count with its qualifier when Arc marks the count not exact."""
+    requests = whole(parent.get("requests"))
+    if requests is None or parent.get("requestCountExact") is not False:
+        return None
+    coverage = parent.get("coverage")
+    if coverage in IDENTIFIED_COVERAGE:
+        return f"{requests:,} identified, count not exact"
+    if coverage == LEGACY_COVERAGE:
+        return f"{requests:,} observed snapshots, count not exact"
+    return f"{UNAVAILABLE} (parent coverage {coverage})" if coverage else None
+
+
+def context_reason(parent: dict[str, Any]) -> str | None:
+    """Return why the parent's peak context is missing, when the report says."""
+    if whole(parent.get("contextMax")) is not None:
+        return None
+    coverage = parent.get("coverage")
+    if coverage and coverage != "recorded-reconciled":
+        return f"parent coverage {coverage}"
+    if whole(parent.get("requests")) == 0:
+        return "no parent request in the window"
+    return None
+
+
+def expiry_reason(combined: dict[str, Any], incomplete: bool) -> str | None:
+    """Return the returns, lifetimes, longest gap and missing premium behind an unknown premium."""
+    expiry = combined.get("cacheExpiry")
+    returns = whole(expiry.get("returns")) if isinstance(expiry, dict) else None
+    if returns is None:
+        return None
+    lifetimes = expiry.get("byLifetime") if isinstance(expiry.get("byLifetime"), dict) else {}
+    tiers = [str(tier) for tier, total in lifetimes.items() if whole(total)]
+    parts = [f"{returns} returns after {' and '.join(tiers)} lifetimes" if returns and tiers else f"{returns} returns"]
+    longest = whole(expiry.get("longestGapSeconds"))
+    if longest is not None:
+        parts.append(f"longest {longest} s")
+    premium = number(expiry.get("extraCostAfterExpiryUsd"))
+    if expiry.get("coverage") != "complete":
+        parts.append(f"premium unpriced: {expiry.get('coverage') or 'coverage not reported'}")
+    elif premium is None:
+        parts.append("premium unpriced: unpriced returns")
+    elif incomplete:
+        parts.append(f"partial premium {premium:.4f} USD, combined cost incomplete")
+    else:
+        parts.append(f"premium {premium:.4f} USD without priced spend")
+    return ", ".join(parts)
+
+
+def reproduce(arguments: argparse.Namespace, report: dict[str, Any]) -> str:
+    """Return the arc_cost.py command that prices the report's session and window."""
+    script = Path(arguments.arc_cost) if arguments.arc_cost else default_arc_cost()
+    source = report.get("source") if isinstance(report.get("source"), dict) else {}
+    window = report.get("window") if isinstance(report.get("window"), dict) else {}
+    session = arguments.session or source.get("sessionId") or source.get("file") or "<session>"
+    words = ["python" if os.name == "nt" else "python3", f'"{script.as_posix()}"', str(session)]
+    for flag, value in (("--since", arguments.since or window.get("since")), ("--until", arguments.until or window.get("until"))):
+        if value:
+            words += [flag, str(value)]
+    return " ".join(words)
+
+
+def child_doubts(summary: dict[str, Any]) -> list[str]:
+    """Return why a child summary without a coverage defect still cannot count as complete."""
+    doubts = []
+    if summary.get("requestCountExact") is False:
+        doubts.append("request count not exact")
+    if "costUsd" in summary and summary["costUsd"] is None:
+        doubts.append("cost unpriced")
+    return doubts
+
+
+def coverage_detail(arguments: argparse.Namespace, report: dict[str, Any], dispatched_unpriced: bool) -> str:
+    """Name each summary that is not reconciled, unpriced usage, and the command that reproduces it."""
+    parent = report.get("parent") if isinstance(report.get("parent"), dict) else {}
+    combined = report.get("combined") if isinstance(report.get("combined"), dict) else {}
+    children = [child for child in report.get("children") or [] if isinstance(child, dict)]
+    parts = []
+    complete_children = 0
+    for name, summary in [("parent", parent)] + [(f"child {child.get('sessionId')}", child) for child in children]:
+        coverage = summary.get("coverage")
+        if not coverage or coverage == "recorded-reconciled":
+            if name == "parent":
+                continue
+            doubts = child_doubts(summary)
+            if not doubts:
+                complete_children += 1
+                continue
+            parts.append(f"{name} {coverage or 'coverage unknown'} ({', '.join(doubts)})")
+            continue
+        text = f"{name} {coverage}"
+        defect = summary.get("coverageDefect")
+        if isinstance(defect, dict):
+            if defect.get("since"):
+                text += f" since {defect['since']}"
+            if defect.get("cause"):
+                text += f" ({defect['cause']})"
+        parts.append(text)
+    models = combined.get("unpricedModels") if isinstance(combined.get("unpricedModels"), list) else []
+    unpriced_requests = whole(combined.get("unpricedRequests"))
+    if unpriced_requests or models:
+        text = f"{unpriced_requests or 0} unpriced requests"
+        parts.append(text + (f" from {', '.join(str(model) for model in models)}" if models else ""))
+    if dispatched_unpriced:
+        parts.append("a dispatched source is unpriced")
+    if not parts:
+        parts.append("combined total unpriced")
+    if children:
+        parts.append(f"{complete_children} of {len(children)} children with complete coverage")
+    return f"{', '.join(parts)}. Reproduce: {reproduce(arguments, report)}"
 
 
 def not_converging(rounds: Sequence[tuple[str, int, int]]) -> bool:
@@ -357,6 +496,8 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
         "absolute_stop": arguments.absolute_stop,
         "coverage": UNAVAILABLE,
         "cache_expiry": UNKNOWN,
+        # Display only. decide() never reads these.
+        "shown": {"requests": None, "context_reason": None, "coverage_detail": None, "expiry_reason": None},
     }
     report: dict[str, Any] | None = None
     try:
@@ -374,6 +515,9 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
     requests = parent.get("requests")
     if isinstance(requests, int) and not isinstance(requests, bool) and parent.get("requestCountExact") is not False:
         counters["requests"] = requests
+    shown = counters["shown"]
+    shown["requests"] = requests_shown(parent)
+    shown["context_reason"] = context_reason(parent)
     try:
         opening = opening_context(arguments, report)
     except CostError as error:
@@ -384,7 +528,8 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
     if opening is not None and isinstance(peak, int) and not isinstance(peak, bool):
         counters["context_growth"] = max(0, peak - opening)
     unpriced_requests = combined.get("unpricedRequests")
-    incomplete = combined.get("costUsd") is None or combined.get("requestCountExact") is False
+    empty = empty_and_complete(combined)
+    incomplete = not empty and (combined.get("costUsd") is None or combined.get("requestCountExact") is False)
     coverage = combined.get("coverage") or ("incomplete" if incomplete else "complete")
     # Incomplete coverage blocks admission as unpriced requests do.
     unpriced = incomplete or not (
@@ -404,13 +549,17 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
         unpriced = True
         coverage = "incomplete"
     counters["coverage"] = coverage
-    priced = number(combined.get("pricedCostUsd"))
+    if unpriced:
+        shown["coverage_detail"] = coverage_detail(arguments, report, dispatched_unpriced)
+    priced = 0.0 if empty else number(combined.get("pricedCostUsd"))
     if priced is None:
         return "error", None, counters, "the cost report has no combined.pricedCostUsd"
     counters["run_spend"] = round(priced + dispatched, 4)
     counters["dispatched_spend"] = round(dispatched, 4) if dispatched_priced else UNAVAILABLE
     counters["spend"] = round(priced + dispatched + arguments.earlier_spend, 4)
-    counters["cache_expiry"] = cache_expiry(report, priced)
+    counters["cache_expiry"] = cache_expiry(report, priced, incomplete)
+    if counters["cache_expiry"] == UNKNOWN:
+        shown["expiry_reason"] = expiry_reason(combined, incomplete)
     rule = decide(arguments, counters, unpriced)
     return ("stop" if rule else "continue"), rule, counters, None
 
@@ -423,9 +572,9 @@ def count(value: Any, unit: str = "") -> str:
     return UNAVAILABLE if value == UNAVAILABLE else f"{value:,}{unit}"
 
 
-def expiry_text(value: Any) -> str:
+def expiry_text(value: Any, reason: str | None = None) -> str:
     if not isinstance(value, dict):
-        return f"{UNKNOWN}, flag: {UNKNOWN}"
+        return f"{UNKNOWN} ({reason}), flag: {UNKNOWN}" if reason else f"{UNKNOWN}, flag: {UNKNOWN}"
     largest = value["largest_child"]
     if isinstance(largest, dict):
         child = f"{largest['session']} {usd(largest['premium_usd'])}"
@@ -444,17 +593,23 @@ def error_head(error: str | None, rule: str | None) -> str:
 
 def render_text(verdict: str, rule: str | None, counters: dict[str, Any], error: str | None) -> str:
     head = f"stop: {rule}" if verdict == "stop" else (error_head(error, rule) if verdict == "error" else "continue")
+    shown = counters["shown"]
+    growth = f"context growth: {count(counters['context_growth'], ' tokens')} above opening {count(counters['opening_context'], ' tokens')}"
+    if counters["context_growth"] == UNAVAILABLE and shown["context_reason"]:
+        growth += f" ({shown['context_reason']})"
     lines = [
         head,
-        f"requests: {count(counters['requests'])}",
-        f"context growth: {count(counters['context_growth'], ' tokens')} above opening {count(counters['opening_context'], ' tokens')}",
+        f"requests: {shown['requests'] or count(counters['requests'])}",
+        growth,
         f"priced spend: {usd(counters['spend'])} (this run {usd(counters['run_spend'])}, of it dispatched {usd(counters['dispatched_spend'])}, earlier runs {usd(counters['earlier_spend'])})",
         f"outstanding allowances: {usd(counters['outstanding'])}, this launch {usd(counters['launch_allowance'])}",
         f"ceiling: {usd(counters['ceiling'])}",
         f"absolute stop: {usd(counters['absolute_stop'])}",
         f"coverage: {counters['coverage']}",
-        f"cache_expiry: {expiry_text(counters['cache_expiry'])}",
     ]
+    if shown["coverage_detail"]:
+        lines.append(f"coverage detail: {shown['coverage_detail']}")
+    lines.append(f"cache_expiry: {expiry_text(counters['cache_expiry'], shown['expiry_reason'])}")
     return "\n".join(lines) + "\n"
 
 
