@@ -34,7 +34,7 @@ Tell every worker that waits for a build, a test run or a measurement which of t
 - A worker that must wait in its own context ends each wait in under 270 seconds. Each return reads the cache and keeps it alive, at a small fraction of a rebuild. This is the one exception to the rule that a coordinator never polls, and it binds only a worker that cannot return before its result exists.
 - A worker with an unavoidable wait of 5 to 60 minutes launches as `subagent_type: long-wait`, whose definition sets a 1-hour cache. One expected gap pays for the higher write price. A subscription in overage silently drops it to 5 minutes, so it still ends each wait in under 270 seconds when it can.
 
-A coordinator cannot keep a worker's cache alive from outside. A PreToolUse hook refuses a subagent's foreground command with a timeout over 270 seconds, except in `long-wait`. A silent Monitor gets no such check. A worker blocked inside a tool call reads no message until that call returns. Do not set `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` or `subagentPromptCacheTtl` for one worker, because each applies to every subagent of the session. For a dispatched Claude session with long waits, set `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` in the environment of the `dispatch.py` command.
+A coordinator cannot keep a worker's cache alive from outside. A worker blocked inside a tool call reads no message until that call returns. Do not set `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` or `subagentPromptCacheTtl` for one worker, because each applies to every subagent of the session. For a dispatched Claude session with long waits, set `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` in the environment of the `dispatch.py` command.
 
 ## Measured acceptance
 
