@@ -583,6 +583,36 @@ else:
                         self.assertFalse(self.worker_calls.exists())
 
     @unittest.skipUnless(os.name == "nt", "native Windows cmd boundary")
+    def test_packaged_windows_arc_starts_owned_codex_with_literal_arguments(self):
+        release = Path(self.tmpdir) / "releases" / "release with spaces"
+        launcher = release / "launchers" / "arc.cmd"
+        entry = release / "cli" / "arc.cjs"
+        launcher.parent.mkdir(parents=True)
+        entry.parent.mkdir(parents=True)
+        launcher.write_text("@echo off\nexit /b 99\n", encoding="utf-8")
+        entry.write_bytes(self.arc_entry.read_bytes())
+        self.arc_entry.unlink()
+        self.env["ARC_BIN"] = str(launcher)
+        self.env["DISPATCH_TEST_EXPANSION"] = "expanded"
+        name = 'Docs & %DISPATCH_TEST_EXPANSION% |<>^!()"'
+        for shell in (False, True):
+            with self.subTest(shell=shell):
+                self.arc_calls.unlink(missing_ok=True)
+                result = self.launch(["--runner", "codex", "--full-access", "--model", "sol",
+                                      "--effort", "high", "--name", name], shell=shell)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("mode: Arc session", result.stdout)
+                self.assertFalse(self.worker_calls.exists())
+                self.assertEqual([call[0] for call in self.calls()], ["windows", "--help", "start"])
+                start = self.calls()[-1]
+                for flag, expected in (("--name", name), ("--model", "gpt-6.1-sol"),
+                                       ("--effort", "high"), ("--provider", "codex"),
+                                       ("--permissions", "never"), ("--prompt-file", str(self.prompt_path))):
+                    self.assertEqual(start[start.index(flag) + 1], expected)
+                self.assertNotIn("--agent-run", start)
+                self.assertIn('"owned":true', result.stdout.splitlines()[-1])
+
+    @unittest.skipUnless(os.name == "nt", "native Windows cmd boundary")
     def test_unknown_windows_arc_wrapper_refuses_without_running_it(self):
         self.arc_entry.unlink()
         for shell in (False, True):

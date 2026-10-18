@@ -1118,6 +1118,7 @@ def arc_command(arc_bin):
     if launcher.stem.lower() != "arc":
         return None
     entries = [launcher.parent.parent / "cli.cjs",
+               launcher.parent.parent / "cli/arc.cjs",
                launcher.parent / "node_modules/@glin/arc/dist/arc.cjs",
                launcher.parent.parent / "@glin/arc/dist/arc.cjs"]
     node = shutil.which("node.exe")
