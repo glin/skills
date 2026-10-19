@@ -6,6 +6,9 @@ With --base, the reviewed commit may sit on a chain of commits above that base, 
 fix commit on top of a reviewed candidate. The base must equal the target HEAD, every commit
 from the base to the reviewed commit must have exactly one parent, and the dirty-path checks
 read the paths the whole range changes.
+
+With --gate-receipt and --gate-command, the receipt that run-gate.py wrote must name the
+reviewed commit, that exact gate command and a passing result.
 """
 
 from __future__ import annotations
@@ -70,8 +73,29 @@ def paths_collide(left: str, right: str, ignore_case: bool) -> bool:
     )
 
 
+def gate_receipt_blocker(receipt: Path, reviewed_commit: str, gate_command: str) -> str | None:
+    try:
+        record = json.loads(receipt.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "The gate receipt is missing."
+    except (OSError, ValueError):
+        return "The gate receipt is not readable JSON."
+    if not isinstance(record, dict) or record.get("exit_code") != 0:
+        return "The gate receipt does not record a passing gate."
+    if record.get("commit") != reviewed_commit:
+        return "The gate receipt names another commit."
+    if record.get("command") != gate_command:
+        return "The gate receipt records another gate command."
+    return None
+
+
 def build_report(
-    repository: Path, commit: str, expected_branch: str, base: str | None = None
+    repository: Path,
+    commit: str,
+    expected_branch: str,
+    base: str | None = None,
+    gate_receipt: Path | None = None,
+    gate_command: str | None = None,
 ) -> dict[str, object]:
     root = Path(git_text(repository, "rev-parse", "--show-toplevel")).resolve()
     branch = git_text(root, "branch", "--show-current") or None
@@ -170,6 +194,10 @@ def build_report(
         blockers.append("Untracked paths collide with reviewed paths.")
     if unmerged_paths:
         blockers.append("The target checkout contains unmerged files.")
+    if gate_receipt is not None:
+        gate_blocker = gate_receipt_blocker(gate_receipt, reviewed_commit, gate_command or "")
+        if gate_blocker:
+            blockers.append(gate_blocker)
 
     return {
         "repository": str(root),
@@ -190,6 +218,7 @@ def build_report(
         "base_matches_target": None if base_commit is None else base_commit == target_head,
         "range_commits": range_commits,
         "range_merge_commits": range_merges,
+        "gate_receipt": None if gate_receipt is None else str(gate_receipt),
         "blockers": blockers,
         "can_fast_forward": not blockers,
     }
@@ -211,7 +240,17 @@ def parse_arguments() -> argparse.Namespace:
             " reviewed commit instead of the reviewed commit alone."
         ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--gate-receipt",
+        help="Receipt from run-gate.py. Blocks unless it names the reviewed commit and a passing gate.",
+    )
+    parser.add_argument(
+        "--gate-command", help="Full gate command the receipt must record. Required with --gate-receipt."
+    )
+    arguments = parser.parse_args()
+    if (arguments.gate_receipt is None) != (arguments.gate_command is None):
+        parser.error("--gate-receipt and --gate-command go together")
+    return arguments
 
 
 def main() -> int:
@@ -222,6 +261,8 @@ def main() -> int:
             arguments.commit,
             arguments.expected_branch,
             arguments.base,
+            Path(arguments.gate_receipt) if arguments.gate_receipt else None,
+            arguments.gate_command,
         )
     except (OSError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)

@@ -18,6 +18,7 @@ import unittest
 from unittest import mock
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "land-preflight.py")
+GATE = "npm test"
 
 GIT_ENV = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -238,6 +239,54 @@ class LandPreflightTests(unittest.TestCase):
             code, report, "The range from the base to the reviewed commit holds no commit."
         )
 
+    def write_receipt(self, commit: str, exit_code: int = 0, command: str = GATE) -> str:
+        receipt = os.path.join(os.path.dirname(self.repository), "gate-receipt.json")
+        write(receipt, json.dumps({"commit": commit, "exit_code": exit_code, "command": command}))
+        return receipt
+
+    def run_gated(self, commit: str, receipt: str) -> tuple[int, dict]:
+        return self.run_script(commit, "--gate-receipt", receipt, "--gate-command", GATE)
+
+    def test_gate_receipt_passes_a_passing_gate_on_the_reviewed_commit(self) -> None:
+        candidate = self.build_topic("feature.txt")
+        receipt = self.write_receipt(candidate)
+        code, report = self.run_gated(candidate, receipt)
+        self.assertEqual(code, 0, report)
+        self.assertEqual(report["gate_receipt"], receipt)
+
+    def test_gate_receipt_blocks_a_missing_receipt(self) -> None:
+        candidate = self.build_topic("feature.txt")
+        missing = os.path.join(os.path.dirname(self.repository), "none.json")
+        code, report = self.run_gated(candidate, missing)
+        self.assert_blocked(code, report, "The gate receipt is missing.")
+
+    def test_gate_receipt_blocks_a_failed_gate(self) -> None:
+        candidate = self.build_topic("feature.txt")
+        code, report = self.run_gated(candidate, self.write_receipt(candidate, exit_code=1))
+        self.assert_blocked(code, report, "The gate receipt does not record a passing gate.")
+
+    def test_gate_receipt_blocks_a_narrowed_gate_command(self) -> None:
+        candidate = self.build_topic("feature.txt")
+        receipt = self.write_receipt(candidate, command="npm run test:cli")
+        code, report = self.run_gated(candidate, receipt)
+        self.assert_blocked(code, report, "The gate receipt records another gate command.")
+
+    def test_gate_receipt_blocks_a_receipt_for_the_commit_before_a_rebase(self) -> None:
+        candidate = self.build_topic("feature.txt")
+        receipt = self.write_receipt(candidate)
+        self.commit_file("main.txt", "main\n", "main moves")
+        git(self.repository, "switch", "-q", "topic")
+        git(self.repository, "rebase", "-q", "main")
+        rebased = git(self.repository, "rev-parse", "HEAD")
+        git(self.repository, "switch", "-q", "main")
+        code, report = self.run_gated(rebased, receipt)
+        self.assert_blocked(code, report, "The gate receipt names another commit.")
+
+    def test_gate_receipt_requires_the_gate_command(self) -> None:
+        candidate = self.build_topic("feature.txt")
+        code, report = self.run_script(candidate, "--gate-receipt", self.write_receipt(candidate))
+        self.assertEqual(code, 2)
+        self.assertEqual(report, {})
 
 if __name__ == "__main__":
     unittest.main()
