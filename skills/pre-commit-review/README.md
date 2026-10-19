@@ -111,3 +111,9 @@ Shared implementation reasoning for [retained action effects](../../docs/orchest
 ## Maintaining this log
 
 Before changing a review rule, read the relevant entry and add the new reason in the same commit. Record the concrete failure or authority boundary, the strongest objection, and the evidence limits. Link shared reasoning instead of duplicating it. Distinguish author instructions from agent beliefs and disclosures.
+
+## Bounded triage publication
+
+Shell serializers can publish decorated call objects before a final recorder rejects them. The shared writer validates bounded inputs, finding fields, identity, and file digests before replacement. The strongest objection is adding a prerequisite for copied installations. An explicit shared-helper root preserves those installations without duplicating the writer or adding Node to the Python recorder. Ordinary reviews retain record opt-in. Digest checks cover observed changes, not an uncooperative external write after the final check.
+
+Key replacement requires a matching preserved previous-key snapshot. Validation returns compact UTF-8 so bounded legacy input stays readable without publication-format expansion. Expected control digests let a consumer bind validation to its own snapshots.

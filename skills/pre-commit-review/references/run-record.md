@@ -57,7 +57,7 @@ Each `round-N/round.json` holds `{"base":"<full commit SHA>","candidate":"<full 
 }
 ```
 
-The coordinator writes `triage.json` after checking the reports. Merge duplicate findings, keep rejected and deferred findings with their reasons, and name every reviewer who reported each one. Use `disputes_brief: true` only for an accepted finding that quotes a false factual claim in the brief. Give each accepted finding a full `fix_commit` when `landed` is set.
+The coordinator publishes `triage.json` through the shared writer after checking the reports. Merge duplicate findings, keep rejected and deferred findings with their reasons, and name every reviewer who reported each one. Use `disputes_brief: true` only for an accepted finding that quotes a false factual claim in the brief. Give each accepted finding a full `fix_commit` when `landed` is set.
 
 ```json
 {
@@ -79,3 +79,18 @@ Write the record after the last review round and before removing the run folder.
 python3 "$SKILL_DIR/scripts/write_record.py" <run folder>
 python3 "$SKILL_DIR/scripts/write_record.py" <run folder> --out <record file>
 ```
+
+## Bounded triage updates
+
+Use `references/scripts/triage.py` from the explicit shared skills root. Default `TRIAGE_SHARED_ROOT` to the owning skill's text-derived `SKILLS_DIR`. For copied installations, set `TRIAGE_SHARED_ROOT` to the installed shared skills directory before running these commands. Export it so the recorder uses the same root. Initialize with the current key SHA-256 and `--expected-target absent`. Every later mutation requires current `--expected-key` and `--expected-target` SHA-256 digests. `calls` updates a subset of known labels. `findings` accepts the complete finding list on stdin, including later fix commits. Calls must be primitive strings. Final recording requires complete calls. Each control JSON must fit within 1 MiB.
+
+```bash
+export TRIAGE_SHARED_ROOT="${TRIAGE_SHARED_ROOT:-$SKILLS_DIR}"
+python3 "$TRIAGE_SHARED_ROOT/references/scripts/triage.py" initialize "$ROUND" --expected-key "$KEY_SHA256" --expected-target absent
+python3 "$TRIAGE_SHARED_ROOT/references/scripts/triage.py" calls "$ROUND" --expected-key "$KEY_SHA256" --expected-target "$TRIAGE_SHA256" --call A=REQUEST_CHANGES
+python3 "$TRIAGE_SHARED_ROOT/references/scripts/triage.py" findings "$ROUND" --expected-key "$KEY_SHA256" --expected-target "$TRIAGE_SHA256" < findings.json
+```
+
+Identity binds labels to the reviewed candidate, normalized original report reference, and report SHA-256. Counters and session metadata do not change it. The recorder rejects mismatches before using calls or findings. Bounded legacy triage remains readable. Updates require explicit `adopt --verified-identity <checked semantic digest>` after checking labels against original reports. Run `identity` to obtain the projection and digest. Supply both expected file digests for adoption.
+
+Use one coordinator per round. Participating writers share a lock and reject observed digest changes. External writers that ignore the lock can write after the final check. Copied recorders require the shared skills installation. Set `TRIAGE_SHARED_ROOT` to its skills directory when no references sibling exists. Missing helpers fail explicitly. Recording remains opt-in.

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 SCRIPT = Path(__file__).with_name("write_record.py")
+sys.path.insert(0, str(SCRIPT.resolve().parents[2] / "references" / "scripts"))
 
 
 def git(repo: Path, *args: str) -> str:
@@ -27,6 +28,9 @@ def save(path: Path, data: dict) -> None:
 
 class WriteRecordTest(unittest.TestCase):
     def setUp(self) -> None:
+        helper_env = mock.patch.dict(os.environ, {"TRIAGE_SHARED_ROOT": str(SCRIPT.resolve().parents[2])})
+        helper_env.start()
+        self.addCleanup(helper_env.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
@@ -76,6 +80,21 @@ class WriteRecordTest(unittest.TestCase):
         self.assertEqual(record["rounds"][0]["reviewers"][0]["requests"], None)
         self.assertEqual(len(record["prompt_sha256"]), 64)
         self.assertEqual(self.write_record(self.out).returncode, 1)
+
+    def test_control_size_and_identity_mismatch_prevent_recording(self) -> None:
+        from triage import operate, file_digest
+        target = self.round_dir / "triage.json"
+        target.unlink()
+        operate(self.round_dir, "initialize", expected_key=file_digest(self.round_dir / "key.json"), expected_target="absent")
+        operate(self.round_dir, "calls", data={"A": "APPROVE"}, expected_key=file_digest(self.round_dir / "key.json"), expected_target=file_digest(target))
+        self.report.write_text("Changed original report.\nAPPROVE\n")
+        result = self.write_record()
+        self.assertIn("identity binding mismatch", result.stderr)
+        self.assertFalse(self.out.exists())
+        target.write_bytes(b" " * (1024 * 1024 + 1))
+        result = self.write_record()
+        self.assertIn("1 MiB", result.stderr)
+        self.assertFalse(self.out.exists())
 
     def test_default_location_and_collision_preserve_first_record(self) -> None:
         default = self.repo / ".claude" / "review-records" / self.out.name

@@ -14,11 +14,16 @@ import sys
 import tempfile
 from pathlib import Path
 
+shared_root = Path(os.environ.get("TRIAGE_SHARED_ROOT", Path(__file__).resolve().parents[2]))
+if not (shared_root / "references" / "scripts" / "triage.py").is_file():
+    raise SystemExit("Shared triage helper is missing. Install shared skills or set TRIAGE_SHARED_ROOT to its skills directory.")
+sys.path.insert(0, str(shared_root / "references" / "scripts"))
+from triage import CALLS, read_json as read_control, identity, validate as validate_triage
+
 FULL_SHA = re.compile(r"[0-9a-f]{40}\Z")
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 RUN_ID = re.compile(r"[0-9]{6}-[0-9a-f]{16}\Z")
 PROJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-CALLS = {"APPROVE", "COMMENT", "REQUEST_CHANGES"}
 VERDICTS = {"accepted", "rejected", "dropped", "deferred"}
 SEVERITIES = {"high", "medium", "low"}
 EFFORTS = {"low", "medium", "high", "xhigh", "max"}
@@ -102,8 +107,10 @@ def build(run_dir: Path, out: Path | None) -> tuple[dict, Path]:
         round_candidate = commit(repo, reviewed["candidate"], f"round {number} candidate")
         if number == 1 and (round_base, round_candidate) != (base, candidate):
             raise ValueError("first round must match the run's base and candidate")
-        key = read_json(directory / "key.json")
-        triage = read_json(directory / "triage.json")
+        key = read_control(directory / "key.json")
+        triage = read_control(directory / "triage.json")
+        if "identity" in triage:
+            validate_triage(triage, key, identity(directory, key), complete=True)
         if meta["judge"]["blind"] and any(details.get("blinded") is not True for details in key.values()):
             raise ValueError("named triage cannot claim a blind judge")
         reviewers = []
@@ -184,6 +191,8 @@ def build(run_dir: Path, out: Path | None) -> tuple[dict, Path]:
             skill_version = git(skill_dir, "log", "-1", "--format=%H", "--", "SKILL.md")
         except subprocess.CalledProcessError as error:
             raise ValueError("skill_version needs the source skill's full commit SHA") from error
+        if not skill_version:
+            raise ValueError("skill_version needs the source skill's full commit SHA")
     if not isinstance(skill_version, str) or not FULL_SHA.fullmatch(skill_version):
         raise ValueError("skill_version must be the source skill's full commit SHA")
     record = {"schema": 2, "date": meta["date"], "run_id": meta["run_id"], "skill_version": skill_version,
