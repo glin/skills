@@ -21,10 +21,11 @@ Read-only commands are fine: `git diff`, `git log`, `gh pr view`, `gh pr list`, 
 
 Distilled from how the author rewrites AI-drafted PR bodies:
 
-- For a fix, start with two plain bullets that a collaborator who missed the investigation can follow. **The bug:** what a user sees, in which component, and why it happened. **The fix:** what the change does about it. Put them at the top of the template's first section, such as Description. With no template, use them as the Summary. Never put them above the template. The report, evidence and details follow them.
+- A small PR (a few edited lines, or a short doc or skill change) with no template gets two or three plain bullets on what changed and why, a `---` divider, and a changes list, with no bold labels. This replaces the fix bullets below and the no-template shape in Step 4. With a template, fill the template.
+- For a fix with a reported bug, start with two plain bullets that a collaborator who missed the investigation can follow. **The bug:** what a user sees, in which component, and why it happened. **The fix:** what the change does about it. Put them at the top of the template's first section, such as Description. With no template, use them as the Summary. A rule from the repo instructions in Step 2 that puts these bullets above the template wins. The report, evidence and details follow them.
 - Leave out behavior the change does not touch. A line such as "X is unchanged" reads as a new problem. Name deferred work only as a "Connected to" issue link.
 - After the two bullets, give the report behind the PR. For support fixes, name the affected setup. Preserve accurate customer terminology and exact configuration identifiers. Do not replace a specific report with abstract subsystem prose. Name the kind of report as the source, such as a support ticket, without customer names or private links. Then state every client or input type that the fix's code paths cover.
-- Drop sections that would be empty or `N/A` on lightweight PRs; keep the testing scaffolding on substantive ones.
+- Drop sections that would be empty or `N/A` on small PRs; keep the testing scaffolding on substantive ones.
 - Testing sections state only what was actually run and observed. Never present simulated or hypothetical runs as results. Leave a template checklist box unchecked rather than claiming an unrun step, annotating why (deferred to CI, not applicable).
 - Describe the final logical change, never the iteration journey. When branch history is iteration noise (approaches added then reverted), suggest squashing before opening so description and history match.
 - Cut rationale essays and bold feature-breakdown walls; keep repro steps, file:line references, and real links. Fluff dies, substance stays.
@@ -55,6 +56,7 @@ Also collect:
 Check, in parallel where possible:
 
 - PR template: `.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, or any file under `.github/PULL_REQUEST_TEMPLATE/`. If multiple templates exist, pick the one whose name best matches the change (e.g., `bug_fix.md` for a fix) or ask.
+- Repo instructions: the root `CLAUDE.md` and `AGENTS.md`. A rule there about PR descriptions overrides the Voice section and Step 4 below.
 - Contributing guide: `CONTRIBUTING.md`, `CONTRIBUTING`, or `docs/contributing*`. Skim for PR description requirements.
 - Recent merged PRs (only if `gh` is authenticated): `gh pr list --state merged --limit 5 --json number,title,body` then inspect a couple to learn tone, section headings, and length.
 - Title style from commit subjects (Conventional Commits, gitmoji, ticket prefix, plain imperative). Mirror whichever dominates; if mixed, prefer the template's example or plain imperative.
@@ -69,9 +71,10 @@ Check, in parallel where possible:
 
 ### 4. Draft the Body
 
-- If a PR template exists, fill it out section by section. Keep a heading even if its content is short; per the Voice rules, drop sections that would be empty or `N/A` on lightweight PRs.
-- If no template, use a minimal structure:
-  - **Summary**: for a fix, the two Voice bullets. Otherwise 1 to 3 sentences on what changed and why.
+- If a PR template exists, fill it out section by section. Keep a heading even if its content is short; per the Voice rules, drop sections that would be empty or `N/A` on small PRs.
+- If no template and the PR is small, use the small-PR shape from Voice.
+- If no template otherwise, use a minimal structure:
+  - **Summary**: for a fix with a reported bug, the two Voice bullets. Otherwise 1 to 3 sentences on what changed and why.
   - **Changes**: bulleted list grouped by area or file when useful.
   - **Testing**: how it was verified, or "Not tested" if unknown. Do not fabricate test runs.
 - Match the tone and length of recent merged PRs.
