@@ -11,7 +11,7 @@
 //
 // Exits 1 on any failure, so it also works as a pre-commit gate.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -120,6 +120,66 @@ for (const [rule, red, green, differs] of PAIRS) {
 const seen = new Set([...found].map((k) => k.split(" ")[0]));
 for (const [, red, green] of PAIRS) {
   for (const target of [red, green]) check(seen.has(target), target + " was audited");
+}
+
+// Exercise CLI selection with one valid skill and one valid instruction file.
+// Each case asserts the exit status and the number of files actually audited.
+const selection = fs.mkdtempSync(path.join(os.tmpdir(), "audit-selection-"));
+try {
+  const parent = path.join(selection, "skills");
+  const direct = path.join(parent, "forward-path");
+  const empty = path.join(selection, "empty");
+  const missing = path.join(selection, "missing");
+  const claude = path.join(selection, "CLAUDE.md");
+  fs.mkdirSync(direct, { recursive: true });
+  fs.mkdirSync(empty);
+  fs.copyFileSync(path.join(skillFixtures, "forward-path", "fixture.md"), path.join(direct, "SKILL.md"));
+  fs.copyFileSync(path.join(claudeDir, "undated.md"), claude);
+  const cases = [
+    ["direct skill", ["skills", direct], 0, 1, 0],
+    ["parent directory", ["skills", parent], 0, 1, 0],
+    ["instruction file", ["claude", claude], 0, 0, 1],
+    ["both categories", ["both", "--skills", direct, "--claude", claude], 0, 1, 1],
+    ["omitted skills category", ["both", "--claude", claude], 0, 0, 1],
+    ["omitted claude category", ["both", "--skills", parent], 0, 1, 0],
+    ["empty skills category", ["skills"], 1, 0, 0],
+    ["empty claude category", ["claude"], 1, 0, 0],
+    ["no categories", ["both"], 1, 0, 0],
+    ["missing skill path", ["skills", missing], 1, 0, 0],
+    ["empty skill directory", ["skills", empty], 1, 0, 0],
+    ["file as skill directory", ["skills", claude], 1, 0, 0],
+    ["missing instruction file", ["claude", missing], 1, 0, 0],
+    ["directory as instruction file", ["claude", empty], 1, 0, 0],
+    ["missing skills with valid claude", ["both", "--skills", missing, "--claude", claude], 1, 0, 1],
+    ["missing claude with valid skills", ["both", "--skills", direct, "--claude", missing], 1, 1, 0],
+    ["empty skills with valid claude", ["both", "--skills", "--claude", claude], 1, 0, 1],
+    ["empty claude with valid skills", ["both", "--claude", "--skills", direct], 1, 1, 0],
+    ["path before any category", ["both", direct, "--claude", claude], 1, 0, 1],
+    ["parent and its child", ["skills", parent, direct], 0, 1, 0],
+    ["missing input alongside valid skill", ["skills", parent, missing], 1, 1, 0],
+    ["empty directory alongside valid skill", ["skills", parent, empty], 1, 1, 0],
+    ["valid repository root", ["both", "--root", selection, "--skills", direct], 0, 1, 0],
+    ["trailing root", ["both", "--claude", claude, "--root"], 2],
+    ["root before skills flag", ["both", "--root", "--skills", "--claude", claude], 2],
+    ["empty root value", ["skills", direct, "--root", ""], 2],
+  ];
+  for (const [name, args, status, skills, docs] of cases) {
+    const result = spawnSync(process.execPath, [path.join(here, "audit.mjs"), ...args], { encoding: "utf8" });
+    if (result.error) throw result.error;
+    check(result.status === status, name + ": exit " + status + " (received " + result.status + ")");
+    if (status === 2) {
+      check(result.stderr.includes("--root requires a repository path"), name + ": explains the missing root value");
+    } else {
+      check(result.stdout.includes(`Audited ${skills} skill targets and ${docs} CLAUDE.md targets.`), name + ": reports audited targets");
+      if (skills) check((result.stdout.match(/skill:forward-path\s+size\s/g) || []).length === 1, name + ": read the skill file once");
+      if (docs) check(/claude\.md:.*CLAUDE\.md\s+size\s/.test(result.stdout), name + ": read the instruction file");
+    }
+  }
+  // The skill name comes from the resolved directory, so "." inside a skill still matches its name.
+  const inside = spawnSync(process.execPath, [path.join(here, "audit.mjs"), "skills", "."], { encoding: "utf8", cwd: direct });
+  check(inside.status === 0 && !/name-mismatch/.test(inside.stdout), "current skill directory: exit 0 with no name mismatch");
+} finally {
+  fs.rmSync(selection, { recursive: true, force: true });
 }
 
 console.log("\n" + failed + " failed, " + total + " checks");

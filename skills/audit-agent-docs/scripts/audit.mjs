@@ -2,7 +2,7 @@
 // Mechanical checks for SKILL.md files and CLAUDE.md files.
 // Reports only what a script can decide; judgement calls stay with the reader.
 //
-//   node audit.mjs skills <dir>...    audit every skill directory under each <dir>
+//   node audit.mjs skills <dir>...    audit each skill directory or its immediate children
 //   node audit.mjs claude <file>...   audit each CLAUDE.md
 //   node audit.mjs both  --skills <dir>... --claude <file>...
 
@@ -145,7 +145,7 @@ function normalise(s) {
 }
 
 function auditSkill(dir) {
-  const name = path.basename(dir);
+  const name = path.basename(path.resolve(dir));
   let skillPath = path.join(dir, "SKILL.md");
   const t = `skill:${name}`;
 
@@ -599,11 +599,17 @@ function main() {
 
   const skillRoots = [];
   const claudeFiles = [];
+  let skillsRequested = mode === "skills";
+  let claudeRequested = mode === "claude";
   let repoRoot = null;
   const takeRoot = (list) => {
-    const i = list.indexOf("--root");
-    if (i !== -1) {
-      repoRoot = path.resolve(list[i + 1] || ".");
+    for (let i = list.indexOf("--root"); i !== -1; i = list.indexOf("--root")) {
+      const value = list[i + 1];
+      if (!value || !value.trim() || value.startsWith("--")) {
+        console.error("--root requires a repository path");
+        process.exit(2);
+      }
+      repoRoot = path.resolve(value);
       list.splice(i, 2);
     }
     return list;
@@ -614,9 +620,15 @@ function main() {
   else if (mode === "both") {
     let bucket = null;
     for (const a of args) {
-      if (a === "--skills") bucket = skillRoots;
-      else if (a === "--claude") bucket = claudeFiles;
+      if (a === "--skills") {
+        skillsRequested = true;
+        bucket = skillRoots;
+      } else if (a === "--claude") {
+        claudeRequested = true;
+        bucket = claudeFiles;
+      }
       else if (bucket) bucket.push(a);
+      else report("error", "selection", "invalid-target", `${a} comes before --skills or --claude`);
     }
   } else {
     console.error(
@@ -626,23 +638,50 @@ function main() {
     process.exit(2);
   }
 
+  let skillCount = 0;
+  let claudeCount = 0;
+  if (!skillsRequested && !claudeRequested)
+    report("error", "selection", "no-targets", "select --skills or --claude");
+
+  const audited = new Set();
   for (const root of skillRoots) {
-    if (!fs.existsSync(root)) {
-      console.error(`skipped, no such directory: ${root}`);
+    if (!root.trim() || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+      report("error", "skills", "invalid-target", `not a directory: ${root || "(empty path)"}`);
       continue;
     }
-    for (const e of fs.readdirSync(root, { withFileTypes: true })) {
-      const full = path.join(root, e.name);
-      if (e.isDirectory() || e.isSymbolicLink()) {
-        if (fs.existsSync(path.join(full, "SKILL.md"))) auditSkill(full);
+    const candidates = fs.existsSync(path.join(root, "SKILL.md"))
+      ? [root]
+      : fs.readdirSync(root, { withFileTypes: true })
+        .filter((e) => e.isDirectory() || e.isSymbolicLink())
+        .map((e) => path.join(root, e.name));
+    const before = skillCount;
+    for (const dir of candidates) {
+      const file = path.join(dir, "SKILL.md");
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) continue;
+      // A parent and one of its children name the same skill twice.
+      const real = fs.realpathSync(dir);
+      if (!audited.has(real)) {
+        audited.add(real);
+        auditSkill(dir);
       }
+      skillCount++;
     }
+    if (skillCount === before)
+      report("error", "skills", "no-targets", `no SKILL.md targets in directory: ${root}`);
   }
   crossSkillDuplicates();
-  for (const f of claudeFiles) {
-    if (fs.existsSync(f)) auditClaudeMd(f, repoRoot || path.dirname(path.resolve(f)));
-    else console.error(`skipped, no such file: ${f}`);
+  for (const file of claudeFiles) {
+    if (!file.trim() || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      report("error", "claude", "invalid-target", `not a file: ${file || "(empty path)"}`);
+      continue;
+    }
+    auditClaudeMd(file, repoRoot || path.dirname(path.resolve(file)));
+    claudeCount++;
   }
+  if (skillsRequested && skillCount === 0)
+    report("error", "skills", "no-targets", "requested skills category audited no targets");
+  if (claudeRequested && claudeCount === 0)
+    report("error", "claude", "no-targets", "requested claude category audited no targets");
 
   const order = { error: 0, warn: 1, info: 2, stat: 3 };
   findings.sort((a, b) => order[a.level] - order[b.level] || a.target.localeCompare(b.target));
@@ -657,6 +696,7 @@ function main() {
     }
     console.log(`${f.target.padEnd(28)} ${f.rule.padEnd(24)} ${f.detail}`);
   }
+  console.log(`\nAudited ${audited.size} skill targets and ${claudeCount} CLAUDE.md targets.`);
   console.log(`\n${counts.error} errors, ${counts.warn} warnings, ${counts.info} notes`);
   process.exit(counts.error > 0 ? 1 : 0);
 }

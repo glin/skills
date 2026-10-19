@@ -39,7 +39,9 @@ node "$SKILL_DIR/scripts/audit.mjs" both \
 
 **Point `--skills` at the source repo, not `~/.claude/skills`.** That directory also holds plugin-marketplace skills, which differ per machine and belong to nobody working here. A count taken from it cannot be compared against another machine's or acted on, and two people auditing the same skills will report different totals and both be right. Quote plugin-skill findings separately, and say that is what they are.
 
-`--root` enables the two checks that need the repo: whether the files, directories, and symbols the instructions name still exist, and whether a rule restates a guard the repo already executes. Junctions and symlinks are followed, so a doc inside a linked-in package still counts as present. Without `--root` those two are skipped and everything else still runs.
+`--root` enables the two checks that need the repo: whether the files, directories, and symbols the instructions name still exist, and whether a rule restates a guard the repo already executes. Junctions and symlinks are followed, so a doc inside a linked-in package still counts as present. Without `--root` those two are skipped and everything else still runs. A `--root` with no path is an error.
+
+A skill path can be one skill directory or a directory of skills. A directory with its own `SKILL.md` counts as one skill. The summary prints how many skills and CLAUDE.md files it read. A path that does not exist, or a named category that finds nothing to read, is an error. In `both` mode you can leave out one of `--skills` and `--claude`, but not both.
 
 The script exits non-zero on an error, so it also works as a pre-commit gate. [references/rubric.md](references/rubric.md) carries every rule, its threshold, and its source.
 
