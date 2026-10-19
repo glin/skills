@@ -3,3 +3,6 @@ __pycache__/
 
 # Codex app display metadata. Codex reads each skill from SKILL.md alone.
 **/agents/openai.yaml
+
+# Agent worktrees, run evidence and logs. They hold machine paths and never ship.
+/.claude/
