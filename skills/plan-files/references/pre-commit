@@ -1,0 +1,38 @@
+#!/bin/sh
+# Every commit in this repository names its paths.
+#
+# Several sessions can share this index. A bare `git commit` takes everything staged in it,
+# including files another session staged for its own commit. The rule is in CLAUDE.md and
+# AGENTS.md at the top of this repository, and prose alone does not hold it.
+#
+# A bare commit, `-a` and `-i` use the shared index, and Git points GIT_INDEX_FILE at `index` or
+# `index.lock`. `git commit -- <path>...` builds a private next-index-*.lock file holding HEAD
+# plus the named paths. A commit from an index file a session made for itself, which is how a
+# file mode change reaches history on Windows, also passes. A merge, cherry-pick, revert or
+# rebase cannot commit by path, so those conclusions pass.
+#
+# A reader such as `| head` can close stderr early. The signal from that write kills the hook,
+# and Git for Windows reads the killed hook as a pass, so the hook ignores the signal and still
+# reaches its exit.
+trap '' PIPE
+
+case "$(basename "${GIT_INDEX_FILE:-index}")" in
+  index | index.lock) ;;
+  *) exit 0 ;;
+esac
+
+for state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+  [ -e "$(git rev-parse --git-path "$state")" ] && exit 0
+done
+
+# A message-only amend takes nothing from the index.
+git diff --cached --quiet && exit 0
+
+{
+  printf '%s\n' "This commit takes everything staged in the shared index:"
+  git diff --cached --name-only | sed 's/^/  /'
+  printf '\n%s\n' "Another session can stage files here at any time. Name your own paths:"
+  printf '\n%s\n' "  git commit -F <message-file> -- <path>..."
+  printf '\n%s\n' "Leave the files you did not change staged as they are. CLAUDE.md at the top of this repository carries the rule."
+} >&2
+exit 1

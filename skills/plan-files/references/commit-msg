@@ -1,0 +1,71 @@
+#!/bin/sh
+# Every commit in this repository carries the runtime that made it.
+#
+# The rule is in CLAUDE.md and AGENTS.md at the top of this repository. Prose alone does not hold it,
+# because a session that edits a plan in a subdirectory can commit without ever reading the
+# file at the top of the repository.
+#
+# This reads what Git itself parsed rather than the raw message. Git treats only the final
+# paragraph as trailers, so a blank line between the two lines drops one of them, and a check
+# that grepped the raw text would pass a message Git cannot parse.
+
+# A reader such as `| head` can close stderr early, and Git for Windows reads a hook killed by
+# that write as a pass. Ignore the signal so the hook still reaches its exit.
+trap '' PIPE
+
+parsed=$(git interpret-trailers --parse <"$1")
+agent=''
+session=''
+agent_count=0
+session_count=0
+while IFS= read -r line; do
+  case "$line" in
+    'Agent: '*)
+      agent=${line#Agent: }
+      agent_count=$((agent_count + 1))
+      ;;
+    'Agent-Session: '*)
+      session=${line#Agent-Session: }
+      session_count=$((session_count + 1))
+      ;;
+  esac
+done <<EOF
+$parsed
+EOF
+faults=''
+
+if [ "$agent_count" != "1" ]; then
+  faults="$faults
+  Agent: Git parsed $agent_count of these, and exactly one is required."
+elif [ "$agent" = "unknown" ]; then
+  faults="$faults
+  Agent: reads unknown. Read the model and the effort from the runtime."
+elif [ "${agent#*'(effort '}" = "$agent" ] || [ "${agent#*', '}" = "$agent" ] || [ "${agent%')'}" = "$agent" ]; then
+  faults="$faults
+  Agent: is missing its effort and harness. The shape is
+    Agent: <model-id>[<context>] (effort <effort>, <harness>)"
+fi
+
+if [ "$session_count" != "1" ]; then
+  faults="$faults
+  Agent-Session: Git parsed $session_count of these, and exactly one is required.
+    Two trailer lines with a blank line between them parse as one."
+elif [ "$session" = "unknown" ]; then
+  faults="$faults
+  Agent-Session: reads unknown. Use the session identifier this runtime reports."
+elif ! printf '%s' "$session" | grep -Eqi '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+  faults="$faults
+  Agent-Session: reads $session, which is not a session identifier. Claude Code and Codex
+    both report a UUID. Read this runtime's UUID from its session or rollout metadata.
+    Inherited environment variables can identify the parent session."
+fi
+
+if [ -n "$faults" ]; then
+  printf '%s\n' "This commit is missing its provenance:$faults" >&2
+  printf '\n%s\n' "Close the message with one block, and no blank line inside it:" >&2
+  printf '\n%s\n' "  Agent: <model-id>[<context>] (effort <effort>, <harness>)" >&2
+  printf '%s\n' "  Agent-Session: <session-id>" >&2
+  printf '\n%s\n' "Copy each value from the session record, and never guess one. The effort is the \"effort\" field in the Claude Code transcript or the Codex rollout." >&2
+  printf '\n%s\n' "The plan-files skill carries the rule. Read CLAUDE.md at the top of this repository." >&2
+  exit 1
+fi
