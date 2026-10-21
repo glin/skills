@@ -340,6 +340,99 @@ class CommitOwnedTests(unittest.TestCase):
         self.assertEqual(member.read_bytes(), original)
         self.assertEqual(self.git("rev-parse", state["recovery_ref"]).strip(), self.baseline)
 
+    def test_discard_prepared_after_failed_publication_preserves_foreign_state(self):
+        self.write("other.md", b"foreign staged input\n")
+        self.git("add", "other.md")
+        self.write("other.md", b"foreign working input\n")
+        def advance(event, state):
+            if event == "before_publish":
+                self.foreign_commit(state)
+        with self.assertRaises(owned.Refusal):
+            self.run_commit(advance)
+        receipt, state = self.receipt()
+        self.assertEqual(state["phase"], "prepared")
+        self.assertNotIn("lock_identity", state)
+        self.assertFalse((self.root / ".git/index.lock").exists())
+        self.write("other.md", b"later foreign staging\n")
+        self.git("add", "other.md")
+        self.write("other.md", b"later foreign working input\n")
+        index_before = (self.root / ".git/index").read_bytes()
+        head_before = self.git("rev-parse", "HEAD")
+        retained = {p.name: p.read_bytes() for p in receipt.parent.iterdir()}
+        other = self.root / ".git/plan-commit-foreign"
+        other.mkdir()
+        (other / "keep").write_bytes(b"foreign recovery")
+        args = ["recover", str(receipt), "--action", "discard-prepared",
+                "--receipt-sha256", owned.digest(receipt.read_bytes())]
+        self.assertEqual(owned.main([*args, "--dry-run"]), 0)
+        self.assertEqual({p.name: p.read_bytes() for p in receipt.parent.iterdir()}, retained)
+        self.assertEqual(owned.main(args), 0)
+        self.assertFalse(receipt.parent.exists())
+        self.assertNotEqual(self.git("show-ref", "--verify", state["recovery_ref"], check=False).returncode, 0)
+        self.assertEqual((self.root / ".git/index").read_bytes(), index_before)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head_before)
+        self.assertEqual(self.git("show", ":other.md"), "later foreign staging\n")
+        self.assertEqual((self.root / "other.md").read_bytes(), b"later foreign working input\n")
+        self.assertEqual((self.root / "plan.md").read_bytes(), b"new\n")
+        self.assertEqual((other / "keep").read_bytes(), b"foreign recovery")
+
+    def test_discard_prepared_refuses_current_locks_interrupted_output_and_publication(self):
+        receipt, state = self.failed("before_publish")
+        sha = owned.digest(receipt.read_bytes())
+        retained = {p.name: p.read_bytes() for p in receipt.parent.iterdir()}
+        lock = self.root / ".git/index.lock"
+        lock.write_bytes(b"foreign lock")
+        with self.assertRaisesRegex(owned.Refusal, "index lock"):
+            owned.recover(receipt, "discard-prepared", receipt_sha256=sha)
+        self.assertEqual(lock.read_bytes(), b"foreign lock")
+        lock.unlink()
+        temporary = receipt.parent / "receipt.tmp"
+        temporary.write_bytes(receipt.read_bytes())
+        with self.assertRaisesRegex(owned.Refusal, "interrupted receipt"):
+            owned.recover(receipt, "discard-prepared", receipt_sha256=sha)
+        self.assertEqual(temporary.read_bytes(), retained["receipt.json"])
+        temporary.unlink()
+        self.git("update-ref", "refs/heads/published", state["candidate"])
+        with self.assertRaisesRegex(owned.Refusal, "published"):
+            owned.recover(receipt, "discard-prepared", receipt_sha256=sha)
+        self.assertEqual({p.name: p.read_bytes() for p in receipt.parent.iterdir()}, retained)
+        self.assertEqual(self.git("rev-parse", state["recovery_ref"]).strip(), state["candidate"])
+
+    def test_discard_prepared_requires_released_preparation_metadata(self):
+        receipt, state = self.failed("before_publish")
+        for update in ({"phase": "building"}, {"lock_identity": [1, 2]},
+                       {"lock_write": False}, {"lock_digest": "0" * 64}):
+            with self.subTest(update=update):
+                owned.save(receipt.parent, dict(state, **update))
+                sha = owned.digest(receipt.read_bytes())
+                with self.assertRaisesRegex(owned.Refusal, "released lock ownership"):
+                    owned.recover(receipt, "discard-prepared", receipt_sha256=sha)
+                self.assertTrue(receipt.exists())
+                self.assertEqual(self.git("rev-parse", state["recovery_ref"]).strip(), state["candidate"])
+
+    def test_discard_prepared_checks_captured_baselines_outputs_and_unrelated_entries(self):
+        receipt, state = self.failed("before_publish")
+        originals = {name: (receipt.parent / name).read_bytes()
+                     for name in ("shared.index", "prepared.index")}
+        blob = self.git("hash-object", "-w", "--stdin", data=b"changed captured entry\n").strip()
+        for name, path, reason in (("shared.index", "plan.md", "baseline entry"),
+                                   ("prepared.index", "plan.md", "prepared entry"),
+                                   ("prepared.index", "other.md", "unrelated captured")):
+            with self.subTest(index=name, path=path):
+                for member, data in originals.items():
+                    (receipt.parent / member).write_bytes(data)
+                index = receipt.parent / name
+                self.git("update-index", "--add", "--cacheinfo", "100644", blob, path, index=index)
+                changed = json.loads(json.dumps(state))
+                changed["members"][name] = owned.digest(index.read_bytes())
+                changed["lock_digest"] = changed["members"]["prepared.index"]
+                owned.save(receipt.parent, changed)
+                sha = owned.digest(receipt.read_bytes())
+                with self.assertRaisesRegex(owned.Refusal, reason):
+                    owned.recover(receipt, "discard-prepared", receipt_sha256=sha)
+                self.assertTrue(receipt.exists())
+                self.assertEqual(self.git("rev-parse", state["recovery_ref"]).strip(), state["candidate"])
+
     def test_discard_refuses_symbolic_recovery_ref_and_preserves_its_target(self):
         receipt, state = self.failed("captured")
         foreign = "refs/tags/foreign-candidate"

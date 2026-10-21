@@ -56,6 +56,17 @@ python3 <skill>/scripts/commit_owned.py recover <receipt-path> --action discard 
 
 Discard requires a `building` receipt without a captured shared index, prepared index, or recorded lock ownership. It checks the repository, receipt, complete members, candidate parent, provenance, changed paths, blobs, and scoped recovery ref. Any local branch containing the candidate refuses disposal. It deletes only that recovery ref and the exact admitted directory members. It leaves shared staging, working files, and foreign locks untouched. A refusal or interrupted deletion retains remaining files for explicit inspection. Discard never resumes a partial deletion automatically.
 
+## Discard a prepared, unpublished transaction
+
+Use the separate action when publication failed after index preparation and the helper released its index lock:
+
+```bash
+python3 <skill>/scripts/commit_owned.py recover <receipt-path> --action discard-prepared --receipt-sha256 <sha256> --dry-run
+python3 <skill>/scripts/commit_owned.py recover <receipt-path> --action discard-prepared --receipt-sha256 <sha256>
+```
+
+Prepared discard requires a `prepared` receipt with captured shared and prepared indexes, matching recorded lock bytes, and no recorded lock ownership. A current index lock or interrupted receipt output blocks it. The captured shared entries must match admitted baselines. The prepared entries must match candidate outputs and preserve unrelated entries. Current staging can differ from both captures. This action never writes current staging or branch tips. It applies the same receipt, member, candidate, and recovery-ref checks as ordinary discard. It refuses published candidates and retains partial deletion for explicit inspection. It never creates an index lock or repairs a receipt.
+
 ## Why the helper stays private
 
 The caller commits complete files in a shared embedded plans repository. The plan-path migration has its own journal and recovery contract. Sharing their transaction code would couple those contracts without another compatible producer. This helper therefore owns only this caller's temporary indexes, captured inputs and message.

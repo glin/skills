@@ -388,11 +388,17 @@ def finish_index(folder, state):
     save(folder, state)
 
 
-def discard_unpublished(receipt, state, receipt_sha256, *, dry_run=False):
+def discard_unpublished(receipt, state, receipt_sha256, *, dry_run=False, prepared=False):
     folder = receipt.parent
     if not receipt_sha256 or digest(receipt.read_bytes()) != receipt_sha256:
         raise Refusal("The admitted receipt identity changed")
-    if (state["phase"] != "building" or
+    if prepared:
+        if (state["phase"] != "prepared" or "lock_identity" in state or
+                not {"shared.index", "prepared.index"} <= set(state["members"]) or
+                state.get("lock_write") is not True or
+                state.get("lock_digest") != state["members"]["prepared.index"]):
+            raise Refusal("Prepared discard requires captured indexes and released lock ownership")
+    elif (state["phase"] != "building" or
             any(key in state for key in ("lock_identity", "lock_digest", "lock_write")) or
             {"shared.index", "prepared.index"} & set(state["members"])):
         raise Refusal("Discard requires an unprepared transaction without an owned lock")
@@ -403,6 +409,9 @@ def discard_unpublished(receipt, state, receipt_sha256, *, dry_run=False):
     if (Path(state["index"]).resolve() != index or folder.parent != index.parent or
             state["recovery_ref"] != "refs/plan-files/recovery/" + folder.name):
         raise Refusal("The receipt does not name its repository recovery directory")
+    if prepared and (os.path.lexists(str(index) + ".lock") or
+                     os.path.lexists(folder / "receipt.tmp")):
+        raise Refusal("A current index lock or interrupted receipt blocks prepared discard")
     if git(root, "symbolic-ref", "-q", state["recovery_ref"], check=False).returncode == 0:
         raise Refusal("A symbolic recovery ref requires explicit resolution")
     if not state["ref"].startswith("refs/heads/"):
@@ -411,10 +420,24 @@ def discard_unpublished(receipt, state, receipt_sha256, *, dry_run=False):
         raise Refusal("A published candidate requires completion or rollback")
     inventory(folder, state)
     verify_candidate(folder, state)
+    if prepared:
+        before = entries(root, folder / "shared.index")
+        after = entries(root, folder / "prepared.index")
+        for path, expected in state["baselines"].items():
+            if before.get(path) != expected:
+                raise Refusal(f"A captured baseline entry differs: {path}")
+        for path, expected in state["outputs"].items():
+            if after.get(path) != expected:
+                raise Refusal(f"A captured prepared entry differs: {path}")
+        if ({p: e for p, e in before.items() if p not in state["outputs"]} !=
+                {p: e for p, e in after.items() if p not in state["outputs"]}):
+            raise Refusal("An unrelated captured index entry changed")
     if digest(receipt.read_bytes()) != receipt_sha256:
         raise Refusal("The admitted receipt identity changed")
     if dry_run:
         return
+    if prepared and os.path.lexists(str(index) + ".lock"):
+        raise Refusal("A current index lock blocks prepared discard")
     git(root, "update-ref", "--no-deref", "-d", state["recovery_ref"], state["candidate"])
     for name, expected in state["members"].items():
         path = folder / name
@@ -439,11 +462,12 @@ def recover(receipt, action="complete", *, receipt_sha256=None, dry_run=False):
     expected = Path(state["index"]).parent / state["recovery_ref"].rsplit("/", 1)[1]
     if folder != expected or receipt.name != "receipt.json" or not folder.name.startswith("plan-commit-"):
         raise Refusal("The receipt does not name its owned scratch directory")
-    if action == "discard":
-        discard_unpublished(receipt, state, receipt_sha256, dry_run=dry_run)
+    if action in ("discard", "discard-prepared"):
+        discard_unpublished(receipt, state, receipt_sha256, dry_run=dry_run,
+                            prepared=action == "discard-prepared")
         return
     if receipt_sha256 is not None or dry_run:
-        raise Refusal("Receipt admission and dry run apply only to discard")
+        raise Refusal("Receipt admission and dry run apply only to discard actions")
     inventory(folder, state, partial=state.get("phase") == "disposing")
     verify_candidate(folder, state, disposing=state.get("phase") == "disposing")
     if action == "rollback":
@@ -510,7 +534,7 @@ def main(argv=None):
                         metavar=("PATH", "SHA256", "BASELINE_BLOB", "BASELINE_MODE", "MODE"))
     resume = commands.add_parser("recover")
     resume.add_argument("receipt")
-    resume.add_argument("--action", choices=("complete", "rollback", "discard"), default="complete")
+    resume.add_argument("--action", choices=("complete", "rollback", "discard", "discard-prepared"), default="complete")
     resume.add_argument("--receipt-sha256")
     resume.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
