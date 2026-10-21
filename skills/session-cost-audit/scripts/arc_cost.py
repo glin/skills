@@ -88,10 +88,24 @@ def command_for(env: dict[str, str] | None = None) -> tuple[list[str] | None, li
     if bundle.is_file():
         refresh_build(repo)
         return ["node", str(bundle)], checked, repo
-    # Any other `arc` on PATH runs a build the adapter cannot name, such as a stale npm shim.
-    installed = next(filter(None, map(editor_bundle, executables)), None)
-    if installed:
-        return ["node", str(installed)], checked, repo
+    # Installed release launchers and legacy extension bundles follow PATH order.
+    try:
+        home = Path(values.get("USERPROFILE" if os.name == "nt" else "HOME") or Path.home())
+        releases = (home / ".arc" / "tools" / "releases").resolve()
+    except (OSError, RuntimeError):
+        releases = None
+    for executable in executables:
+        command = Path(executable)
+        name_matches = command.name.lower() == "arc.cmd" if os.name == "nt" else command.name == "arc"
+        try:
+            directory = command.parent.resolve()
+        except OSError:
+            continue
+        if releases and name_matches and directory.name == "launchers" and directory.parent.parent == releases:
+            return [executable], checked, repo
+        installed = editor_bundle(executable)
+        if installed:
+            return ["node", str(installed)], checked, repo
     return None, checked, repo
 
 
@@ -207,9 +221,26 @@ def main(args: list[str] | None = None) -> int:
     forwarded = list(sys.argv[1:] if args is None else args)
     if "--json" not in forwarded:
         forwarded.append("--json")
+    invocation: list[str] | str = [*command, "cost", *forwarded]
+    process_options = {}
+    if os.name == "nt" and Path(command[0]).suffix.lower() in {".cmd", ".bat"}:
+        if any("\r" in argument or "\n" in argument for argument in invocation):
+            print("Arc's Windows launcher cannot accept arguments containing line breaks.", file=sys.stderr)
+            return 2
+        # Expand once so percent literals survive the launcher's %* forwarding.
+        quoted = []
+        for argument in invocation:
+            argument = re.sub(r'(\\*)"', lambda match: match[1] * 2 + '""', argument)
+            trailing = len(argument) - len(argument.rstrip("\\"))
+            quoted.append('"' + argument + "\\" * trailing + '"')
+        environment = dict(os.environ)
+        environment["ARC_COST_BATCH_COMMAND"] = " ".join(quoted)
+        shell = os.environ.get("COMSPEC") or "cmd.exe"
+        invocation = f'"{shell}" /d /v:off /s /c "%ARC_COST_BATCH_COMMAND%"'
+        process_options["env"] = environment
     try:
-        result = subprocess.run([*command, "cost", *forwarded], capture_output=True, text=True,
-                                encoding="utf-8", check=False)
+        result = subprocess.run(invocation, capture_output=True, text=True,
+                                encoding="utf-8", check=False, **process_options)
     except OSError:
         return missing_arc(checked, repo)
     if result.returncode:

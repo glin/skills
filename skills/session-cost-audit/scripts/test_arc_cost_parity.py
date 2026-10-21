@@ -280,6 +280,120 @@ class ArcResolverTest(unittest.TestCase):
             command, _, _ = ARC.command_for()
         self.assertEqual(command, ["node", str(bundle)])
 
+    def release_launcher(self, name: str) -> Path:
+        launcher = self.root / "selected home" / ".arc" / "tools" / "releases" / "release-id" / "launchers" / name
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        launcher.touch()
+        launcher.chmod(0o755)
+        return launcher
+
+    def test_release_launcher_executes_inherited_editor_and_forwards_arguments(self) -> None:
+        launcher = self.release_launcher("arc.cmd" if os.name == "nt" else "arc")
+        if os.name == "nt":
+            launcher.write_text('@echo off\nsetlocal DisableDelayedExpansion\nset "ELECTRON_RUN_AS_NODE=1"\n"%ARC_EDITOR_EXECUTABLE%" "%~dp0..\\cli\\arc.cjs" %*\nexit /b %errorlevel%\n', encoding="utf-8")
+        else:
+            launcher.write_text('#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "$ARC_EDITOR_EXECUTABLE" "${0%/*}/../cli/arc.cjs" "$@"\n', encoding="utf-8")
+        bundle = launcher.parent.parent / "cli" / "arc.cjs"
+        bundle.parent.mkdir()
+        bundle.write_text('import json, os, sys\nprint(json.dumps({"schemaVersion": 2, "arguments": sys.argv[1:], "nodeMode": os.environ.get("ELECTRON_RUN_AS_NODE")}))\n', encoding="utf-8")
+        home = launcher.parents[5]
+        env = {**os.environ, "ARC_STATUS": "", "ARC_REPO": "", "PATH": str(launcher.parent),
+               "HOME": str(home), "USERPROFILE": str(home), "ARC_EDITOR_EXECUTABLE": sys.executable,
+               "ARC_TEST_PERCENT": "controlled expansion"}
+        argument_cases = [
+            [str(self.root / "session transcript.jsonl"), "--since", "2026-09-01T00:00:00Z", "--by-tool-kind"],
+            ["session", "--until-text", "alpha|echo"],
+            ["session&echo.jsonl"],
+            ["%ARC_TEST_PERCENT%.jsonl", "--until-text", "%ARC_TEST_PERCENT%"],
+            ["session", "--until-text", 'alpha"|echo "beta'],
+            ["session", "--until-text", r'back\slash\\"quote', "path with spaces\\", "!literal!^caret<>"],
+            ["session", "--until-text", '""%ARC_TEST_PERCENT%"&echo"', "", "tab\ttext"],
+            ["session", "--until-text", "alpha\nbeta"],
+            ["session", "--until-text", "alpha\rbeta"],
+        ]
+        for arguments in argument_cases:
+            for json_options in ([], ["--json"]):
+                with self.subTest(arguments=arguments, json_options=json_options), mock.patch.dict(os.environ, env, clear=True), mock.patch.object(ARC, "DEFAULT_REPO", self.default):
+                    output = io.StringIO()
+                    error = io.StringIO()
+                    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+                        if os.name == "nt" and any("\r" in argument or "\n" in argument for argument in arguments):
+                            with mock.patch.object(ARC.subprocess, "run") as run:
+                                self.assertEqual(ARC.main([*arguments, *json_options]), 2)
+                            run.assert_not_called()
+                            self.assertIn("line breaks", error.getvalue())
+                            self.assertEqual(output.getvalue(), "")
+                            continue
+                        self.assertEqual(ARC.main([*arguments, *json_options]), 0, error.getvalue())
+                    report = json.loads(output.getvalue())
+                    self.assertEqual(report["arguments"], ["cost", *arguments, "--json"])
+                    self.assertEqual(report["nodeMode"], "1")
+
+    def test_release_launcher_selection_rejects_other_homes_and_layouts(self) -> None:
+        for platform, name, home_key in (("posix", "arc", "HOME"), ("nt", "ARC.CMD", "USERPROFILE")):
+            launcher = self.release_launcher(name)
+            home = launcher.parents[5]
+            other_home = self.root / "other home"
+            env = {**self.env, "ARC_REPO": "", "HOME": str(other_home), "USERPROFILE": str(other_home), home_key: str(home)}
+            candidates = [
+                (launcher, [str(launcher)]),
+                (other_home / launcher.relative_to(home), None),
+                (launcher.with_name("arc.cmd" if platform == "posix" else "arc.exe"), None),
+                (launcher.with_name("ARC" if platform == "posix" else "arc-status.cmd"), None),
+                (launcher.parent.parent / "bin" / name, None),
+                (launcher.parent.parent.parent / "launchers" / name, None),
+                (launcher.parent.parent.parent / ".." / "launchers" / name, None),
+                (launcher.parent.parent / "nested" / "launchers" / name, None),
+                (home / ".arc-other" / "tools" / "releases" / "release-id" / "launchers" / name, None),
+            ]
+            for candidate, expected in candidates:
+                with self.subTest(platform=platform, candidate=candidate), mock.patch.object(ARC, "Path", type(self.root)), mock.patch.object(ARC.os, "name", platform):
+                    with mock.patch.object(ARC, "DEFAULT_REPO", self.default), mock.patch.object(ARC, "path_commands", return_value=[str(candidate)]):
+                        command, _, _ = ARC.command_for(env)
+                        self.assertEqual(command, expected)
+
+    def test_release_launcher_preserves_command_and_checkout_precedence(self) -> None:
+        launcher = self.release_launcher("arc.cmd" if os.name == "nt" else "arc")
+        self.bundle.parent.mkdir(parents=True)
+        self.bundle.touch()
+        self.default_bundle.parent.mkdir(parents=True)
+        self.default_bundle.touch()
+        checkout, shim = self.link_checkout()
+        env = {**self.env, "HOME": str(launcher.parents[5]), "USERPROFILE": str(launcher.parents[5])}
+        cases = [
+            ({"ARC_STATUS": "custom arc"}, [str(launcher)], ["custom", "arc"]),
+            ({}, [str(launcher)], ["node", str(self.bundle)]),
+            ({"ARC_REPO": str(self.root / "absent repo")}, [str(launcher)], None),
+            ({"ARC_REPO": ""}, [str(launcher), str(shim)], ["node", str(checkout / "cli" / "dist" / "arc.cjs")]),
+            ({"ARC_REPO": ""}, [str(launcher)], ["node", str(self.default_bundle)]),
+        ]
+        for overrides, paths, expected in cases:
+            with self.subTest(overrides=overrides, paths=paths), mock.patch.object(ARC, "DEFAULT_REPO", self.default):
+                with mock.patch.object(ARC, "path_commands", return_value=paths), mock.patch.object(ARC, "refresh_build"):
+                    command, _, _ = ARC.command_for({**env, **overrides})
+                    self.assertEqual(command, expected)
+
+    def test_release_and_legacy_editor_commands_keep_path_order(self) -> None:
+        launcher = self.release_launcher("arc.cmd" if os.name == "nt" else "arc")
+        later = launcher.parent.parent.parent / "later-release" / "launchers" / launcher.name
+        later.parent.mkdir(parents=True)
+        later.touch()
+        bundle = self.root / "extension" / "dist" / "cli.cjs"
+        bundle.parent.mkdir(parents=True)
+        bundle.touch()
+        legacy = str(bundle.parent / "bin" / launcher.name)
+        env = {**self.env, "ARC_REPO": "", "HOME": str(launcher.parents[5]), "USERPROFILE": str(launcher.parents[5])}
+        cases = [
+            ([str(launcher), legacy], [str(launcher)]),
+            ([legacy, str(launcher)], ["node", str(bundle)]),
+            ([str(later), str(launcher)], [str(later)]),
+            ([str(self.root / "arbitrary" / launcher.name), str(launcher)], [str(launcher)]),
+        ]
+        for paths, expected in cases:
+            with self.subTest(paths=paths), mock.patch.object(ARC, "DEFAULT_REPO", self.default), mock.patch.object(ARC, "path_commands", return_value=paths):
+                command, _, _ = ARC.command_for(env)
+                self.assertEqual(command, expected)
+
     def test_stale_path_command_is_refused(self) -> None:
         self.env["ARC_REPO"] = ""
         checkout = self.root / "old arc"
