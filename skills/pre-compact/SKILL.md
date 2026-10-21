@@ -1,6 +1,6 @@
 ---
 name: pre-compact
-description: "Save conversation-only findings in durable local files before /compact. Use when: pre compact, get ready to compact, prep for compaction, about to compact, save state before compacting."
+description: "Save conversation-only findings in durable local files before compaction. Use when asked to prepare for compaction, save state before compacting, or compact yourself. Preparation alone does not request compaction."
 ---
 
 # Pre-Compact
@@ -14,7 +14,7 @@ This is a checklist, not ceremony. Do the steps that apply, skip the ones that d
 - Write owned local state files and commit owned changes under the project's conventions and standing authority. Preserve unrelated working tree and index changes.
 - Do not create external posts, send messages, or push without explicit authorization. Compaction prep grants no new external authority.
 - Do not write memory or rely on scratchpad contents during compaction prep.
-- Do not start new investigation. Record deferred work as an open thread and stop.
+- Do not start new investigation. Record deferred work as an open thread.
 
 ## Procedure
 
@@ -42,9 +42,15 @@ At the end of the durable doc, add a short "State for resuming" subsection so th
 - The open decisions and deferred work, each in one line.
 - Anything the author explicitly asked to do next or defer.
 
-### 4. Report and stop
+### 4. Report or request compaction
 
-Report the durable file paths, live artifact state, and open threads in a few lines. Say prep is complete only after saving the state. Then stop so the author can compact.
+Report the durable file paths, live artifact state, and open threads in a few lines. Say prep is complete only after saving the state.
+
+- For preparation-only requests, report and stop. Invoking `pre-compact` alone does not authorize compaction.
+- For an explicit request to compact this session, save state first. Then request compaction through the runtime's supported mechanism.
+- Follow the available compaction instructions, including their admission, retry, and completion rules. Do not invent a command or transport.
+- If compaction is unavailable or refused, report that outcome and the saved handoff. Give the author the manual `/compact` command.
+- Distinguish requested or queued compaction from completed compaction. Claim completion only when the runtime confirms it.
 
 ## Relationship to other skills
 
