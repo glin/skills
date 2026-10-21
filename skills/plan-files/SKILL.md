@@ -1,6 +1,6 @@
 ---
 name: plan-files
-description: "The convention for written plan and retrospective files that outlive a session: where they live, their templates, runtime-resource records, status values, and archival rules. Use when: write a plan, save this plan, write a retrospective, record a regression, where do plans go, start or update a plan file, archive that plan, which plans are still open. Covers durable planning and retrospective artifacts. For executing a multi-phase plan across sessions and model tiers, use phased-plan instead."
+description: "The convention for written plan and retrospective files that outlive a session: where they live, their templates, runtime-resource records, status values, and archival rules. Use when: write a plan, save this plan, write a retrospective, record a regression, where do plans go, start or update a plan file, archive that plan, which plans are still open. Covers durable planning and retrospective artifacts. For phase design and cross-session handoffs, use phased-plan."
 ---
 
 # Plan files
