@@ -64,6 +64,7 @@ A small coherent task runs inline, with one reviewer.
 ## Brief
 
 - The [worker brief contract](../skills/references/owner-brief.md) keeps the owner's words apart from agent inferences. Otherwise reviewers treat implementation choices as requirements.
+- Reader labels identify work the reader follows. Inherited labels on internal workflow workers obscure that work. Parent/child links keep those workers discoverable.
 - The coordinator reads the skill again at every invocation. A long thread keeps the text it loaded first.
 - Brief saves the loaded skill bytes and their source. Another session can change the skill during the run.
 - Brief names the shared resources. Caches, services and devices are shared with every session, and a collision gives no warning.
@@ -96,6 +97,8 @@ A move of an action to a new owner can drop a visible effect while the return va
 - A task too large for one implementer splits into phases. A second implementer that finishes the work pays again for everything the first read.
 - A context overrun alone does not block review of a green commit. The commit holds the work, and review shows what remains.
 - An implementer keeps its last five calls for its commit and report. Without a commit, the round is wasted.
+
+The implementer iterates with the project's iteration command, or with the tests its change touches, and runs the full gate once per candidate SHA. One run spent 37 of its implementer's 68 minutes waiting on repeated full `npm test` runs, while the project's instructions already named a faster iteration command. The full gate still decides delivery, so the narrower loop moves an integration failure later but never lets one land.
 
 ## Review
 
@@ -179,6 +182,8 @@ A move of an action to a new owner can drop a visible effect while the return va
 
 ## The stop check
 
+A delayed Codex snapshot gets one observation after a later model request, using the first report's frozen window. An immediate loop cannot observe a snapshot published after its own call returns. The normal check retains its actual first report without requiring another live check to initialize recovery. Recovery covers an identified Codex coordinator or child when every source has identifiable Codex bills. Mixed Claude sources and unidentified or legacy evidence retain conservative refusal. The retained pair keeps source and build identity, selected request identities, priced dollars and observation times. Prefix hashes and file identities allow appended evidence without accepting rewritten or replaced sources. Failed recovery consumes the observation. Missing coverage and prices still refuse admission. Replacement accounting and identical dispatched windows prevent overlapping charges. Explicit commitment bounds cover all work after the historical cutoff before paid admission. That total must fit below the ceiling. The as-of disclosure preserves the distinction between a reconciled window and final cost. Close reconciles later work through a current end. The later attempt is consumed before report loading, so adapter errors cannot grant extra observations. Recovery requires a current finite cutoff before its initial live check. Ordinary open-ended accounting retains its first evidence and cannot replace it for recovery. Supplemental reports retain their actual source ownership, source bytes, build, selected bills and dollars across the pair. A supplemental omission or changed price cannot erase spending. Complete empty parent and child summaries preserve zero-cost coverage, while explicit defects and unknown usage still refuse recovery.
+
 - `stop-check.py` decides numeric continuation. Coordinators stopped at limits the rules never resolved, and the author approved most stops.
 - An unreadable figure prints as `unavailable`, never zero. A zero admits unmeasured spend.
 - A partial figure prints with its qualifier. One run reported `unknown` for figures Arc held in part.
@@ -226,24 +231,35 @@ A move of an action to a new owner can drop a visible effect while the return va
 - A calling workflow's limits bind `delegate`. Its ask before another premium round would stop a converging `orchestrate` round.
 - A harness subagent comes before a dispatched session. Only the subagent reports completion without an explicit return path.
 - Immutable reviews prefer native reporters. Mandatory dispatch added a second return path. Dispatch stays for enforced sandboxes, because a prompt does not enforce read-only access.
-- Each launch selects one completion route. A result read before its callback gives one review two completions.
+- Each launch selects one completion route. A waited result that is also read by hand gives one review two completions.
 
 ## Models and providers
 
 - Model names and flags come from the CLI. They change between releases, and a wrong one kills the launch.
 - A completed child task establishes delegation support. A catalog entry or a spawn does not.
 - Provider rules live in `skills/references/model-providers.md`. A rule held only in `delegate` missed other coordinators.
-- Model onboarding updates the reference and both launchers together. The launchers otherwise kept the old build.
+- Model onboarding updates the reference, `dispatch.py` and Arc's standalone model table together. A copy left behind kept the old build.
 - The `haiku` shorthand pins `claude-haiku-5-5`. Claude Code's alias selects Haiku 4.5 on some providers.
 
 ## Dispatch launchers
 
-- `dispatch.py` is the default launcher. `dispatch.sh` lacks `--wait`, so a fallback drops only that flag.
-- A detached dispatch's log is read once after launch. A launch that died on a bad model name left its watcher waiting.
+- Both launchers forward to `arc run`. Arc already owns the launch policy, the supervisor and the receipt, and the launchers' own copy of the read-only rules needed a test to stay equal to the shell copy.
+- `dispatch.py` is the default launcher. `dispatch.sh` keeps the same flags, so a fallback drops none.
+- A detached dispatch's log is read once after launch. A launch can die at once on a bad model name, and only its log shows why.
 - `--prompt` takes `FILE` and rejects prompt text. A coordinator passed the text, and the error did not name the mistake.
 - Every flag carries a one-line description. From names alone, a coordinator confused `--read-only` with `--full-access`, and `--attach` with `--wait`.
-- `--wait` prints the capped result text. Reading the result file costs another round trip.
-- `dispatch.py` refuses a Claude worktree behind `HEAD`. Claude bases it on `origin/HEAD`, and sessions started without the feature they had to design.
+- A writable wait (`--wait-launch` or legacy `--wait`) prints the capped result text. Reading the result file costs another round trip.
+- A read-only wait prints its result path, not the report text. A coordinator read a reviewer's report in its launch log before blinding, so the judge of that review was not blind. Read-only marks a review because every review launch is read-only. A read-only analysis that wants the text pays one more read.
+- Both wait routes pass a worker exit code from 1 to 255 through. Arc's outcome alone gave every failed worker exit 1, so a caller could not branch on the worker's own code. The status read repeats up to 40 times, a quarter second apart, because Arc publishes the outcome before it saves the exit code. A worker exit 2 shares its code with the launcher's own failures, so the `worker exit:` line tells them apart.
+- A waited launch that did not succeed prints Arc's observation reason on stderr. On Linux, a Codex launch with a missing binary printed a normal record with outcome `failed` and no cause.
+- Each wait command stops after 25 hours without an outcome. Arc's supervisor publishes one within 24 hours of its start, and a supervisor that stopped without publishing left the wait running with no bound. `DISPATCH_WAIT_LIMIT_SECONDS` replaces the bound, so a test reaches it without waiting.
+- A waited report without inline text prints its path and size, not a cause. Arc drops the text above its character cap and also above its JSON byte limit.
+- Both wait routes follow `arc dispatch wait` past Arc's 110-second deadline. A review outlasts one deadline, and a waited launch that returned at it would leave the coordinator without a completion.
+- An `arc run` reply in any state other than `starting`, `observed` or `deadline` fails the launch with exit 2. Arc returns `accepted-with-errors` with a launch ID when its supervisor never spawns, and a launcher that read only the launch ID printed a normal record and exited 0.
+- `--read-tool` outside Claude `--read-only` refuses before the window route. `arc start` takes no read tools, so a reader-owned writable request dropped the flag silently.
+- Attended Codex drops only the generated log path. An explicit `--log` reaches Arc, which refuses it. Dropping the explicit path lost a log the caller asked for, with no notice.
+- A writable Claude launch into a folder that Claude has not trusted ends `failed`, with Claude's refusal as Arc's reason. Trust does not pass from a parent folder. Claude refused new scratch folders inside a trusted checkout, so a new worktree there fails the same way. Codex refuses an untrusted folder outside a Git repository the same way. Neither launcher accepts trust or passes `--skip-git-repo-check`, because trust lets the provider load that folder's settings, hooks and MCP servers.
+- Dispatch refuses `--worktree` and `-w`. The calling workflow creates the tree at its base commit. A Claude `-w` tree started at `origin/HEAD`, and sessions started without the feature they had to design.
 - A retry reuses its worktree through `--cwd`. The retry keeps the branch and path.
 - Session names put job and round before the topic. Narrow rows then tell a review from a re-review.
 - The shared skills folder is found by text, not by `..`. Installed skill junctions point at different repositories.
@@ -258,29 +274,41 @@ A move of an action to a new owner can drop a visible effect while the return va
 
 ## Arc sessions and receipts
 
+- Both launchers refuse a new session without `--arc-dispatch` before contacting Arc. A missing flag loses the portable parent link.
+- The marked launch runs in the foreground with an explicit `--log PATH` before a separate background `--wait-launch LAUNCH_ID`. A host can return empty output for a background launch, leaving its marker outside the paired command result.
+- An explicit log path selects the standalone route for foreground waited launches, including reader-owned writable requests with a ready Arc window. Ordinary owned requests without standalone-only flags retain their window route. Hosted manual launches do not support later waited observation.
+- The printed `await:` command uses Bash quoting. On Windows, Python also prints a PowerShell command with its call operator and literal argument quoting. Use the form for the host shell.
+- The observation deadline stays fixed across requests. Each Python subprocess retains the existing bounded startup and reply allowance so a final response can arrive after Arc ends its interval.
 - `--arc-dispatch` goes in the parent Bash command. Arc reads only that command's output, and the wrapper's filename can change.
 - A detached read-only print run chooses its session ID before launch. The launcher returns before Claude writes its JSON.
 - `--owned` marks only a session the author requested. An owned consultation appeared under Today, and no later receipt retracts ownership.
-- The receipt parser accepts the idle suffix. A native background line can append one.
+- The launchers print Arc's `ARC_DISPATCH_SESSION=` marker unchanged and parse no native receipt. Arc reads the native background line, and a second parser could disagree with Arc's.
+- The marker prints after a failed `arc dispatch wait` or `arc dispatch result`. The worker still runs, and without the marker the caller loses its link.
 - Waited output frames receipt-shaped worker lines. Worker prose otherwise creates a false launch link.
-- The writable shell launch pipes the prompt to Claude. A positional prompt left a Git Bash launch idle.
 - Windows Arc dispatch runs the JavaScript entry through Node. Batch wrappers mangle command characters and environment variables.
 - A reader-owned writable dispatch prefers a ready Arc window. The reader continues in Arc's prompt box with no terminal writer lock.
-- Only an explicit refusal from Arc permits a CLI fallback. Any other outcome risks a second worker.
+- Only an explicit refusal from Arc permits a standalone launch. Any other outcome risks a second worker.
 
-## Detached dispatch receipts
+## Dispatch completion
 
-- The receipt separates worker observation, queue acceptance and parent consumption. Each can happen without the next.
-- A launch assigns private output paths before it starts. A reused path cannot identify its writer.
-- Frozen events keep the exact report bytes and digest. Recovery then detects a changed report and keeps the earlier one.
-- A worker that leaves the registry has not proved success. Its exit status stays unknown.
-- A handler claims an event before processing and acknowledges after durable incorporation. Effects and acknowledgment are not one transaction.
-- Queue exit zero records only reported acceptance. The queue has no acceptance query, so a failure after it starts is never retried automatically.
-- Receipt and monitor locks release when their process exits. They stop concurrent changes and competing monitors.
-- Every queue, registry and diagnostic subprocess has a deadline. A hung subprocess otherwise stalls delivery.
-- A shell callback launch passes its Bash executable to the shared launcher. Native Windows Python cannot run a Bash script.
+- Arc delivers no callback into the parent session. Arc refuses a standalone callback because it cannot prove the original parent on the daemon, and the hosted parent notices were dropped unfinished.
+- `--notify-thread` refuses before launch. A dropped flag would start a worker whose result nobody collects.
+- Observation with `--wait-launch LAUNCH_ID` starts no worker. Pending identity and repeated deadlines preserve one launch and one overall wait deadline. The supervisor runs without a waiter.
+- A review observation carries `--read-only` from its launch. Arc status omits the launch policy, so the printed observation command preserves the flag that keeps reports blinded.
+- The completion routes for any worker are observation with `--wait-launch` and manual reads through `arc dispatch status` and `result`. Each one works without a callback.
+- Claude `SendMessage` with `notify_when_idle` is a completion route only for a writable Claude worker under a Claude parent. The launching session's `ListAgents` lists that worker as a `bg` peer, which `SendMessage` needs as its address. Every other worker and parent uses separate observation, because no other pairing delivers the idle notice.
+- Both wait routes return on an outcome that Arc publishes while the worker still runs. A wait that held until worker exit would block its caller on a worker that waits for an answer.
+
+## Artifact settlement
+
+- Owned disposition inventories catch aggregate small logs and ignored outputs that per-file limits miss. A digest-bound view prevents competing states while explicit migration preserves unrelated manual rows.
+
+- Completed children settle independently of active parents and unresolved review findings. Named readers and verified archives preserve required evidence without granting deletion authority.
+
+- Standalone resource views let plan-free runs check the disposition contract. Saving checked resource state under the plan branch rules prevents uncommitted closure edits without changing delivery authority.
 
 ## Sources
 
 - [Claude Code model configuration](https://code.claude.com/docs/en/model-config) owns the provider alias defaults.
 - [Claude Code permission modes](https://code.claude.com/docs/en/permission-modes) owns the model and CLI requirements for auto mode.
+

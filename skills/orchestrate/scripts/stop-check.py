@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -55,6 +57,7 @@ IDENTIFIED_COVERAGE = ("recorded-reconciled", "recorded-gaps", "billed-with-unkn
 LEGACY_COVERAGE = "legacy-snapshots"
 OPENING_FILE = "stop-check-opening.json"
 BLOCK_FILE = "stop-check.txt"
+RECOVERY_FILE = "snapshot-recovery.json"
 OPERATIONS = (
     "checkpoint",
     "fix-round",
@@ -120,6 +123,11 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     source.add_argument("--arc-cost", help="Path to arc_cost.py. Defaults to the session-cost-audit skill beside this one.")
     source.add_argument("--cost-json", help="Read a saved Arc cost report instead of running arc_cost.py.")
     source.add_argument("--dispatched-cost", help="dispatched-cost.json from the run folder.")
+    source.add_argument("--snapshot-recovery", choices=("first", "observe"), help="Retain the first report or make its single later observation.")
+    source.add_argument("--recovery-request", help="Completed Codex response ID after the first observation.")
+    source.add_argument("--no-worker-launches", action="store_true", help="Confirm no worker launched between observations.")
+    source.add_argument("--recovery-commitments", help="JSON dollar bounds for recovery, coordinator, check, verification, workers and close.")
+    source.add_argument("--post-cutoff-reserve", type=money, default=0.0, help="Conservative reserve for all work after the frozen cutoff.")
     limits = parser.add_argument_group("limits")
     limits.add_argument("--ceiling", type=money, required=True, help="Route ceiling in USD.")
     limits.add_argument("--absolute-stop", type=money, help="Absolute stop in USD. Defaults to twice the ceiling.")
@@ -180,7 +188,7 @@ def load_report(arguments: argparse.Namespace) -> dict[str, Any]:
 
 
 def number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         return None
     return float(value)
 
@@ -209,7 +217,8 @@ def same_end(left: Any, right: Any) -> bool:
     return moment(left) == moment(right)
 
 
-def load_dispatched(path: str, owned: set[str], window_end: Any) -> tuple[float, bool, bool]:
+def load_dispatched(path: str, owned: set[str], window_end: Any, window_start: Any = None, strict: bool = False,
+                    retained: list[dict] | None = None) -> tuple[float, bool, bool]:
     """Return the priced sum of unowned dispatched sources, whether any source is unpriced, and
     whether every unowned source has a priced figure."""
     try:
@@ -228,6 +237,10 @@ def load_dispatched(path: str, owned: set[str], window_end: Any) -> tuple[float,
     for entry in entries:
         if not isinstance(entry, dict) or not entry.get("sessionId"):
             raise CostError(f"{path} holds a source without a sessionId")
+        if ("since" in entry and not same_end(entry["since"], window_start)) or (strict and "since" not in entry):
+            raise CostError(f"{path} prices {entry['sessionId']} from a different window start")
+        if strict and "until" not in entry:
+            raise CostError(f"{path} omits the window end for {entry['sessionId']}")
         if "until" in entry and not same_end(entry["until"], window_end):
             raise CostError(
                 f"{path} prices {entry['sessionId']} to {entry['until']}, but the cost report ends at {window_end}"
@@ -236,6 +249,8 @@ def load_dispatched(path: str, owned: set[str], window_end: Any) -> tuple[float,
         if source in seen:
             continue
         seen.add(source)
+        if retained is not None:
+            retained.append(dict(entry))
         if entry.get("costUsd") is None or entry.get("requestCountExact") is False:
             unpriced = True
         priced = number(entry.get("pricedCostUsd"))
@@ -245,6 +260,231 @@ def load_dispatched(path: str, owned: set[str], window_end: Any) -> tuple[float,
             continue
         total += priced
     return total, unpriced, every_priced
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def recovery_sources(report: dict[str, Any], previous: list[dict] | None = None) -> list[dict]:
+    """Keep source bytes and selected bill identities separate from Arc's monetary totals."""
+    sources = [dict(report["parent"], **report["source"]), *(report.get("children") or [])]
+    result = []
+    for index, source in enumerate(sources):
+        if source.get("kind") not in ("codex", "codex-thread") or not source.get("file") or not source.get("sessionId"):
+            raise CostError("snapshot recovery requires identified Codex source files")
+        path = Path(source["file"])
+        stat = path.stat()
+        raw = path.read_bytes()
+        saved = previous[index] if previous and index < len(previous) else None
+        if saved and (saved["sessionId"] != source["sessionId"] or saved["file"] != str(path)
+                      or saved["identity"] != [stat.st_dev, stat.st_ino] or len(raw) < saved["size"]
+                      or hashlib.sha256(raw[:saved["size"]]).hexdigest() != saved["sha256"]):
+            raise CostError("snapshot recovery source was replaced or rewritten")
+        bills = {}
+        later = {}
+        for line in raw.splitlines():
+            row = json.loads(line)
+            if row.get("type") != "token_usage_record":
+                continue
+            payload = row.get("payload") or {}
+            key = payload.get("response_id")
+            if not key or payload.get("thread_id") != source["sessionId"]:
+                continue
+            stamp = moment(row.get("timestamp"))
+            if not isinstance(stamp, datetime):
+                raise CostError("snapshot recovery bill has no timestamp")
+            value = {"timestamp": row["timestamp"], "payload": payload}
+            if moment(report["window"]["since"]) <= stamp < moment(report["window"]["until"]):
+                if key in bills and bills[key] != value:
+                    raise CostError("snapshot recovery has contradictory request evidence")
+                bills[key] = value
+            else:
+                later[key] = value
+        if len(bills) != whole(source.get("requests")):
+            raise CostError("snapshot recovery cannot identify every selected request")
+        result.append({"sessionId": source["sessionId"], "file": str(path), "identity": [stat.st_dev, stat.st_ino],
+                       "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "bills": bills, "later": later})
+    if previous and len(previous) != len(result):
+        raise CostError("snapshot recovery source set changed")
+    return result
+
+
+def save_recovery(arguments: argparse.Namespace, state: dict, error: str | None = None) -> None:
+    if error:
+        state["observations"][-1]["error"] = error
+    path = Path(arguments.run_folder) / RECOVERY_FILE
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def begin_recovery(arguments: argparse.Namespace) -> dict | None:
+    """Consume the later observation before reading any report or running the adapter."""
+    if not arguments.snapshot_recovery:
+        return None
+    if not arguments.run_folder:
+        raise CostError("snapshot recovery requires a run folder")
+    path = Path(arguments.run_folder) / RECOVERY_FILE
+    if arguments.snapshot_recovery == "first":
+        if path.exists():
+            raise CostError("snapshot recovery already retained its first observation")
+        if not all(isinstance(moment(getattr(arguments, key)), datetime) for key in ("since", "until")):
+            raise CostError("snapshot recovery requires a frozen start and end before the first check")
+        return None
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if len(state.get("observations", [])) != 1:
+        raise CostError("snapshot recovery already used its later observation")
+    state["observations"].append({"observedAt": now(), "error": "the observation did not return usable evidence"})
+    save_recovery(arguments, state)
+    return state
+
+
+def recovery_pair(old: dict, report: dict, previous: list[dict]) -> list[dict]:
+    """Check the same selected bills and prices while allowing appended snapshot evidence."""
+    if report.get("source") != old.get("source") or report.get("buildCommit") != old.get("buildCommit"):
+        raise CostError("snapshot recovery source or Arc build changed")
+    if not all(same_end(report["window"].get(key), old["window"].get(key)) for key in ("since", "until")):
+        raise CostError("snapshot recovery moved the frozen window")
+    sources = recovery_sources(report, previous)
+    if not previous or [row["bills"] for row in sources] != [row["bills"] for row in previous]:
+        raise CostError("snapshot recovery selected requests changed")
+    for before, after in zip([old["parent"], *old.get("children", []), old["combined"]],
+                             [report["parent"], *report.get("children", []), report["combined"]], strict=True):
+        if any(before.get(key) != after.get(key) for key in ("requests", "pricedCostUsd", "unpricedRequests", "unpricedModels")):
+            raise CostError("snapshot recovery request counts or priced dollars changed")
+        defect = before.get("coverageDefect") or {}
+        if defect and defect.get("cause") != "snapshot-unmatched":
+            raise CostError("snapshot recovery cannot resolve an earlier genuine coverage gap")
+        if empty_and_complete(before) and not defect:
+            if not empty_and_complete(after) or after.get("coverageDefect"):
+                raise CostError("snapshot recovery empty source changed")
+            continue
+        if (before is not old["combined"] and before.get("coverage") != "recorded-reconciled"
+                and (before.get("coverage") != "billed-with-unknown-coverage" or defect.get("cause") != "snapshot-unmatched")):
+            raise CostError("snapshot recovery cannot resolve an earlier genuine coverage gap")
+        if (after.get("coverage") != "recorded-reconciled" or after.get("requestCountExact") is False
+                or number(after.get("pricedCostUsd")) is None
+                or number(after.get("costUsd")) != number(after.get("pricedCostUsd"))
+                or after.get("unpricedRequests") != 0 or after.get("unpricedModels") or after.get("coverageDefect")):
+            raise CostError("snapshot recovery still has unresolved coverage or prices")
+    return sources
+
+
+def recovery_dispatched(arguments: argparse.Namespace, report: dict, observation: dict,
+                        previous: list[dict] | None = None) -> tuple[float, bool, bool]:
+    """Retain each supplemental source's Arc report and the evidence that owns its selected bills."""
+    entries: list[dict] = []
+    totals = (0.0, False, True)
+    if arguments.dispatched_cost:
+        totals = load_dispatched(arguments.dispatched_cost, owned_sources(report), report["window"]["until"],
+                                 report["window"]["since"], True, entries)
+    entries.sort(key=lambda entry: str(entry["sessionId"]))
+    retained: list[dict] = []
+    observation["supplemental"] = retained
+    old = {item["entry"]["sessionId"]: item for item in previous or []}
+    if previous is not None and [entry["sessionId"] for entry in entries] != sorted(old):
+        raise CostError("snapshot recovery supplemental source ownership changed")
+    for entry in entries:
+        if not entry.get("report"):
+            raise CostError("snapshot recovery requires each supplemental Arc report")
+        raw = load_report(argparse.Namespace(cost_json=entry["report"]))
+        item = {"entry": entry, "report": raw}
+        retained.append(item)
+        if raw.get("buildCommit") in (None, "unknown", ""):
+            raise CostError("snapshot recovery requires a known supplemental Arc build")
+        if not all(same_end(raw["window"].get(key), report["window"].get(key)) for key in ("since", "until")):
+            raise CostError("snapshot recovery supplemental report window differs")
+        summaries = [dict(raw["parent"], sessionId=raw["source"]["sessionId"]), *raw.get("children", [])]
+        selected = next((row for row in summaries if row.get("sessionId") == entry["sessionId"]), None)
+        if selected is None or any(entry.get(key) != selected.get(key) for key in ("pricedCostUsd", "costUsd", "coverage")):
+            raise CostError("snapshot recovery supplemental price differs from its Arc report")
+        if (entry.get("requestCountExact") is False) != (selected.get("requestCountExact") is False):
+            raise CostError("snapshot recovery supplemental request coverage differs")
+        if previous is None:
+            item["sources"] = recovery_sources(raw)
+        else:
+            before = old[entry["sessionId"]]
+            if entry["report"] != before["entry"]["report"]:
+                raise CostError("snapshot recovery supplemental report was replaced")
+            item["sources"] = recovery_pair(before["report"], raw, before["sources"])
+    return totals
+
+
+def recovery_observation(arguments: argparse.Namespace, report: dict[str, Any], attempt: dict | None = None) -> dict[str, Any] | None:
+    """Retain one fixed-window pair. A failed second observation still consumes that observation."""
+    mode = arguments.snapshot_recovery
+    summaries = [report.get("parent") or {}, *(report.get("children") or [])]
+    defects = [summary.get("coverageDefect") or {} for summary in summaries]
+    if not mode:
+        if (not arguments.run_folder or not any(defect.get("cause") == "snapshot-unmatched" for defect in defects)
+                or (Path(arguments.run_folder) / RECOVERY_FILE).exists()):
+            return None
+        mode = "first"
+    if not arguments.run_folder:
+        raise CostError("snapshot recovery requires a run folder")
+    path = Path(arguments.run_folder) / RECOVERY_FILE
+    stamp = attempt["observations"][-1]["observedAt"] if attempt else now()
+    observation = {"observedAt": stamp, "report": report}
+    if mode == "first":
+        state = {"observations": [observation]}
+        with path.open("x", encoding="utf-8") as output:
+            json.dump(state, output, indent=2)
+    else:
+        state = attempt
+        if not state:
+            raise CostError("snapshot recovery has no reserved later observation")
+        state["observations"][-1].update(observation)
+        state["observations"][-1].pop("error", None)
+        save_recovery(arguments, state)
+    window = report.get("window") or {}
+    if not all(isinstance(moment(window.get(key)), datetime) for key in ("since", "until")):
+        if mode == "first" and not arguments.snapshot_recovery:
+            state["recoveryUnavailable"] = "the first observation has no frozen start and end"
+            save_recovery(arguments, state)
+            return None
+        raise CostError("snapshot recovery requires a frozen start and end")
+    if not all(same_end(getattr(arguments, key), window[key]) for key in ("since", "until")):
+        raise CostError("snapshot recovery command and report windows differ")
+    if moment(window["until"]) > moment(stamp) or moment(window["since"]) >= moment(window["until"]):
+        raise CostError("snapshot recovery window is invalid")
+    if report.get("buildCommit") in (None, "unknown", ""):
+        raise CostError("snapshot recovery requires a known Arc build")
+    first = state["observations"][0]
+    old = first["report"]
+    if state.get("recoveryUnavailable"):
+        raise CostError(state["recoveryUnavailable"])
+    if mode == "first":
+        if not any(defect.get("cause") == "snapshot-unmatched" for defect in defects):
+            raise CostError("snapshot recovery requires a missing matching snapshot")
+        first["sources"] = recovery_sources(report)
+        try:
+            recovery_dispatched(arguments, report, first)
+            state["firstComplete"] = True
+        finally:
+            save_recovery(arguments, state)
+        return None
+    if not state.get("firstComplete"):
+        raise CostError("snapshot recovery lacks a usable first observation")
+    if not arguments.no_worker_launches or moment(stamp) <= moment(first["observedAt"]):
+        raise CostError("snapshot recovery requires a later request without intervening worker launches")
+    sources = recovery_pair(old, report, first.get("sources") or [])
+    later = sources[0]["later"].get(arguments.recovery_request)
+    if (not later or arguments.recovery_request in first["sources"][0]["later"]
+            or moment(later["timestamp"]) <= moment(first["observedAt"])):
+        raise CostError("snapshot recovery requires one completed later model request")
+    if "supplemental" not in first:
+        raise CostError("snapshot recovery lacks the first supplemental source evidence")
+    try:
+        dispatched = recovery_dispatched(arguments, report, state["observations"][-1], first["supplemental"])
+    finally:
+        save_recovery(arguments, state)
+    commitments = json.loads(Path(arguments.recovery_commitments or "").read_text(encoding="utf-8"))
+    keys = ("recovery", "coordinator", "check", "verification", "workers", "close")
+    if any(number(commitments.get(key)) is None or commitments[key] < (0 if key == "workers" else 0.000001) for key in keys):
+        raise CostError("snapshot recovery requires conservative bounds for every current commitment")
+    if (not math.isfinite(arguments.post_cutoff_reserve) or arguments.post_cutoff_reserve < sum(commitments[key] for key in keys)
+            or commitments["workers"] < sum(arguments.outstanding)):
+        raise CostError("snapshot recovery post-cutoff reserve is insufficient")
+    return {"until": window["until"], "reserve": arguments.post_cutoff_reserve, "dispatched": dispatched}
 
 
 def opening_context(arguments: argparse.Namespace, report: dict[str, Any] | None) -> int | None:
@@ -327,6 +567,8 @@ def empty_and_complete(combined: dict[str, Any]) -> bool:
         whole(combined.get("requests")) == 0
         and whole(combined.get("unpricedRequests")) == 0
         and combined.get("coverage") is None
+        and not combined.get("coverageDefect")
+        and not combined.get("unpricedModels")
         and combined.get("requestCountExact") is not False
         and "costUsd" not in combined
         and "pricedCostUsd" not in combined
@@ -461,9 +703,11 @@ def decide(arguments: argparse.Namespace, counters: dict[str, Any], unpriced: bo
     if spend >= arguments.absolute_stop:
         return RULE_ABSOLUTE
     if arguments.launch_allowance is not None:
-        committed = sum(arguments.outstanding) + arguments.reserve + arguments.launch_allowance
+        committed = sum(arguments.outstanding) + arguments.reserve + arguments.launch_allowance + counters.get("post_cutoff_reserve", 0)
         if spend + committed >= arguments.absolute_stop:
             return RULE_ADMISSION
+        if counters.get("recovery") and spend + committed >= arguments.ceiling:
+            return "snapshot recovery commitments reach the ceiling"
         # Running workers already took their share of the allowance when they were admitted.
         needed = arguments.reserve + arguments.launch_allowance
         if unpriced and (arguments.unpriced_allowance_left is None or needed > arguments.unpriced_allowance_left):
@@ -500,9 +744,13 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
         "shown": {"requests": None, "context_reason": None, "coverage_detail": None, "expiry_reason": None},
     }
     report: dict[str, Any] | None = None
+    attempt = None
     try:
+        attempt = begin_recovery(arguments)
         report = load_report(arguments)
-    except CostError as error:
+    except (CostError, OSError, ValueError, KeyError, TypeError) as error:
+        if attempt:
+            save_recovery(arguments, attempt, str(error))
         try:
             opening = opening_context(arguments, None)
         except CostError:
@@ -510,6 +758,16 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
         if opening is not None:
             counters["opening_context"] = opening
         return "error", None, counters, str(error)
+    try:
+        recovery = recovery_observation(arguments, report, attempt)
+    except (CostError, OSError, ValueError, KeyError, TypeError) as error:
+        if attempt:
+            save_recovery(arguments, attempt, str(error))
+        return "error", None, counters, f"snapshot recovery refused: {error}"
+    if recovery:
+        counters["recovery"] = recovery
+        counters["post_cutoff_reserve"] = recovery["reserve"]
+        counters["outstanding"] += recovery["reserve"]
     parent = report.get("parent") if isinstance(report.get("parent"), dict) else {}
     combined = report.get("combined") if isinstance(report.get("combined"), dict) else {}
     requests = parent.get("requests")
@@ -538,8 +796,8 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
     window = report.get("window") if isinstance(report.get("window"), dict) else {}
     window_end = window["until"] if "until" in window else arguments.until
     try:
-        dispatched, dispatched_unpriced, dispatched_priced = (
-            load_dispatched(arguments.dispatched_cost, owned_sources(report), window_end)
+        dispatched, dispatched_unpriced, dispatched_priced = recovery["dispatched"] if recovery else (
+            load_dispatched(arguments.dispatched_cost, owned_sources(report), window_end, window.get("since"), bool(recovery))
             if arguments.dispatched_cost
             else (0.0, False, True)
         )
@@ -609,6 +867,8 @@ def render_text(verdict: str, rule: str | None, counters: dict[str, Any], error:
     ]
     if shown["coverage_detail"]:
         lines.append(f"coverage detail: {shown['coverage_detail']}")
+    if counters.get("recovery"):
+        lines.append(f"cost as of: {counters['recovery']['until']}, post-cutoff reserve {usd(counters['post_cutoff_reserve'])}, Close must reconcile later work")
     lines.append(f"cache_expiry: {expiry_text(counters['cache_expiry'], shown['expiry_reason'])}")
     return "\n".join(lines) + "\n"
 

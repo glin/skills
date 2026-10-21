@@ -17,6 +17,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stop-check.py")
 # Loading the script by path would otherwise leave a bytecode cache in the skill folder.
@@ -85,6 +86,401 @@ class StopCheckTests(unittest.TestCase):
     def assert_verdict(self, code: int, lines: list[str], expected: str) -> None:
         self.assertEqual(lines[0], expected, lines)
         self.assertEqual(code, 0 if expected == "continue" else 1, lines)
+
+    def recovery_fixture(self) -> tuple[dict, dict, list[str]]:
+        folder = os.path.join(self.directory, "recovery")
+        os.mkdir(folder)
+        bill = {"type": "token_usage_record", "timestamp": "2026-01-01T00:01:00Z",
+                "payload": {"thread_id": "coordinator", "response_id": "first", "usage": {"total_tokens": 10}}}
+        source = self.write("rollout.jsonl", json.dumps(bill) + "\n")
+        first = report(requests=1, priced=5, window_until="2026-01-01T00:02:00Z")
+        first["source"].update(kind="codex", file=source)
+        first["buildCommit"] = "a" * 40
+        for summary in (first["parent"], first["combined"]):
+            summary.update(costUsd=None, requestCountExact=False, coverage="billed-with-unknown-coverage")
+        first["parent"]["coverageDefect"] = {"cause": "snapshot-unmatched", "since": bill["timestamp"]}
+        second = json.loads(json.dumps(first))
+        for summary in (second["parent"], second["combined"]):
+            summary.update(costUsd=5, requestCountExact=True, coverage="recorded-reconciled")
+            summary.pop("coverageDefect", None)
+        commitments = self.write("commitments.json", dict(recovery=1, coordinator=1, check=1, verification=1, workers=0, close=1))
+        arguments = ["--ceiling", "20", "--run-folder", folder, "--since", first["window"]["since"],
+                     "--until", first["window"]["until"], "--launch-allowance", "2", "--reserve", "1",
+                     "--post-cutoff-reserve", "5", "--recovery-commitments", commitments]
+        return first, second, arguments
+
+    def observe_first(self, first: dict, arguments: list[str]) -> list[str]:
+        with patch.object(stop_check, "now", return_value="2026-01-01T00:03:00Z", create=True):
+            code, lines = self.run_script(first, *arguments, "--snapshot-recovery", "first")
+        self.assert_verdict(code, lines, "stop: unpriced usage blocks paid work")
+        self.append_later_request(first)
+        return lines
+
+    def append_later_request(self, first: dict) -> None:
+        with open(first["source"]["file"], "a", encoding="utf-8") as source:
+            source.write(json.dumps({"type": "token_usage_record", "timestamp": "2026-01-01T00:04:00Z",
+                                    "payload": {"thread_id": first["source"]["sessionId"], "response_id": "later", "usage": {"total_tokens": 20}}}) + "\n")
+
+    def recover(self, second: dict, arguments: list[str]) -> tuple[int, list[str]]:
+        with patch.object(stop_check, "now", return_value="2026-01-01T00:05:00Z", create=True):
+            return self.run_script(second, *arguments, "--snapshot-recovery", "observe",
+                                   "--recovery-request", "later", "--no-worker-launches")
+
+    def test_delayed_snapshot_recovers_once_without_adding_the_window_twice(self) -> None:
+        first, second, arguments = self.recovery_fixture()
+        self.observe_first(first, arguments)
+        code, lines = self.recover(second, arguments)
+        self.assert_verdict(code, lines, "continue")
+        self.assertIn("priced spend: 5.00 USD (this run 5.00 USD, of it dispatched 0.00 USD, earlier runs 0.00 USD)", lines)
+        self.assertIn("cost as of: 2026-01-01T00:02:00Z, post-cutoff reserve 5.00 USD, Close must reconcile later work", lines)
+        folder = arguments[arguments.index("--run-folder") + 1]
+        with open(os.path.join(folder, "snapshot-recovery.json"), encoding="utf-8") as saved:
+            evidence = json.load(saved)
+        self.assertEqual([row["observedAt"] for row in evidence["observations"]],
+                         ["2026-01-01T00:03:00Z", "2026-01-01T00:05:00Z"])
+        self.assertEqual([row["report"] for row in evidence["observations"]], [first, second])
+        self.assertNotEqual(self.recover(second, arguments)[0], 0)
+
+    def test_normal_cost_check_retains_the_actual_first_report_for_one_later_observation(self) -> None:
+        first, second, arguments = self.recovery_fixture()
+        with patch.object(stop_check, "load_report", side_effect=[first, second]) as loader:
+            with patch.object(stop_check, "now", return_value="2026-01-01T00:03:00Z"):
+                code, lines = self.run_script(None, *arguments, "--session", "coordinator")
+            self.assert_verdict(code, lines, "stop: unpriced usage blocks paid work")
+            self.append_later_request(first)
+            with patch.object(stop_check, "now", return_value="2026-01-01T00:05:00Z"):
+                code, lines = self.run_script(None, *arguments, "--session", "coordinator", "--snapshot-recovery", "observe",
+                                              "--recovery-request", "later", "--no-worker-launches")
+            self.assert_verdict(code, lines, "continue")
+            self.assertEqual(loader.call_count, 2)
+        folder = arguments[arguments.index("--run-folder") + 1]
+        with open(os.path.join(folder, "snapshot-recovery.json"), encoding="utf-8") as saved:
+            observations = json.load(saved)["observations"]
+        self.assertEqual([item["report"] for item in observations], [first, second])
+        self.assertEqual([item["observedAt"] for item in observations],
+                         ["2026-01-01T00:03:00Z", "2026-01-01T00:05:00Z"])
+
+    def test_failed_later_load_consumes_recovery_before_loading_again(self) -> None:
+        for failure in ("adapter", "malformed", "schema", "missing"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                original, self.directory = self.directory, folder
+                try:
+                    first, second, arguments = self.recovery_fixture()
+                    self.observe_first(first, arguments)
+                    path = self.write("failed.json", "{" if failure == "malformed" else {"schemaVersion": 999})
+                    if failure == "missing":
+                        os.remove(path)
+                    flags = ["--cost-json", path] if failure != "adapter" else [
+                        "--session", "coordinator", "--arc-cost", self.write("failure.py", "raise SystemExit('unavailable')")]
+                    real_loader = stop_check.load_report
+                    with patch.object(stop_check, "load_report", wraps=real_loader) as loader:
+                        code, lines = self.recover(None, [*arguments, *flags])
+                        self.assertEqual(code, 2, lines)
+                        folder = arguments[arguments.index("--run-folder") + 1]
+                        with open(os.path.join(folder, stop_check.RECOVERY_FILE), encoding="utf-8") as saved:
+                            observations = json.load(saved)["observations"]
+                        self.assertEqual(len(observations), 2)
+                        self.assertEqual(observations[1]["observedAt"], "2026-01-01T00:05:00Z")
+                        self.assertTrue(observations[1]["error"])
+                        self.assertEqual(observations[0]["report"], first)
+                        code, lines = self.recover(second, arguments)
+                        self.assertEqual(code, 2, lines)
+                        self.assertIn("already used", lines[0])
+                        self.assertEqual(loader.call_count, 1)
+                finally:
+                    self.directory = original
+
+    def test_explicit_initial_recovery_needs_finite_bounds_before_loading(self) -> None:
+        first, _, arguments = self.recovery_fixture()
+        del arguments[arguments.index("--until"):arguments.index("--until") + 2]
+        with patch.object(stop_check, "load_report", return_value=first) as loader:
+            code, lines = self.run_script(None, *arguments, "--session", "coordinator", "--snapshot-recovery", "first")
+        self.assertEqual(code, 2, lines)
+        loader.assert_not_called()
+
+    def test_open_ended_accounting_keeps_first_evidence_without_recovery(self) -> None:
+        first, second, arguments = self.recovery_fixture()
+        first["window"]["until"] = None
+        unbounded = list(arguments)
+        del unbounded[unbounded.index("--until"):unbounded.index("--until") + 2]
+        with patch.object(stop_check, "now", return_value="2026-01-01T00:03:00Z"):
+            code, lines = self.run_script(first, *unbounded)
+        self.assert_verdict(code, lines, "stop: unpriced usage blocks paid work")
+        self.assertIn("priced spend: 5.00 USD (this run 5.00 USD, of it dispatched 0.00 USD, earlier runs 0.00 USD)", lines)
+        self.append_later_request(first)
+        code, lines = self.run_script(second, *arguments)
+        self.assert_verdict(code, lines, "continue")
+        code, lines = self.recover(second, arguments)
+        self.assertEqual(code, 2, lines)
+        folder = arguments[arguments.index("--run-folder") + 1]
+        with open(os.path.join(folder, stop_check.RECOVERY_FILE), encoding="utf-8") as saved:
+            evidence = json.load(saved)
+        self.assertEqual(evidence["observations"][0]["report"], first)
+        self.assertTrue(evidence["recoveryUnavailable"])
+        code, lines = self.run_script(second, *arguments, "--snapshot-recovery", "first")
+        self.assertEqual(code, 2, lines)
+
+    def supplemental_fixture(self, first: dict, price: float) -> tuple[dict, dict, str]:
+        raw = json.loads(json.dumps(first))
+        source = self.write("worker.jsonl", json.dumps({"type": "token_usage_record", "timestamp": "2026-01-01T00:01:00Z",
+                                                       "payload": {"thread_id": "worker", "response_id": "worker-first"}}) + "\n")
+        raw["source"].update(sessionId="worker", file=source)
+        for summary in (raw["parent"], raw["combined"]):
+            summary.update(pricedCostUsd=price, costUsd=price, requestCountExact=True, coverage="recorded-reconciled")
+            summary.pop("coverageDefect", None)
+        report_path = self.write("worker-report.json", raw)
+        entry = dict(sessionId="worker", report=report_path, pricedCostUsd=price, costUsd=price,
+                     coverage="recorded-reconciled", requestCountExact=True, **first["window"])
+        path = self.write("dispatched.json", {"sources": [entry, dict(entry)]})
+        return raw, entry, path
+
+    def test_recovery_retains_supplemental_spending_and_source_evidence(self) -> None:
+        cases = ("zero", "omitted flag", "omitted entry", "source", "report", "build", "bill", "replacement", "valid")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                original, self.directory = self.directory, folder
+                try:
+                    first, second, arguments = self.recovery_fixture()
+                    raw, entry, dispatched = self.supplemental_fixture(first, 30 if case != "valid" else 1)
+                    initial = [*arguments, "--dispatched-cost", dispatched]
+                    initial_lines = self.observe_first(first, initial)
+                    if case != "valid":
+                        self.assertIn("priced spend: 35.00 USD (this run 35.00 USD, of it dispatched 30.00 USD, earlier runs 0.00 USD)", initial_lines)
+                    observe = list(initial)
+                    if case == "zero":
+                        entry.update(pricedCostUsd=0, costUsd=0)
+                        for summary in (raw["parent"], raw["combined"]):
+                            summary.update(pricedCostUsd=0, costUsd=0)
+                    elif case == "omitted flag":
+                        observe = arguments
+                    elif case == "source":
+                        entry["sessionId"] = "other"
+                    elif case == "report":
+                        entry["report"] = self.write("different-report.json", raw)
+                    elif case == "build":
+                        raw["buildCommit"] = "b" * 40
+                    elif case == "bill":
+                        with open(raw["source"]["file"], "a", encoding="utf-8") as source:
+                            source.write(json.dumps({"type": "token_usage_record", "timestamp": "2026-01-01T00:01:30Z",
+                                                    "payload": {"thread_id": "worker", "response_id": "extra"}}) + "\n")
+                    elif case == "replacement":
+                        path = raw["source"]["file"]
+                        os.rename(path, path + ".old")
+                        with open(path + ".old", "rb") as source, open(path, "wb") as replacement:
+                            replacement.write(source.read())
+                    self.write("worker-report.json", raw)
+                    self.write("dispatched.json", {"sources": [] if case == "omitted entry" else [entry, dict(entry)]})
+                    with patch.object(stop_check, "load_dispatched", wraps=stop_check.load_dispatched) as loader:
+                        code, lines = self.recover(second, observe)
+                    if case == "valid":
+                        self.assertEqual(loader.call_count, 1)
+                    self.assertEqual(code, 0 if case == "valid" else 2, lines)
+                    if case == "valid":
+                        self.assertIn("priced spend: 6.00 USD (this run 6.00 USD, of it dispatched 1.00 USD, earlier runs 0.00 USD)", lines)
+                        folder = arguments[arguments.index("--run-folder") + 1]
+                        with open(os.path.join(folder, stop_check.RECOVERY_FILE), encoding="utf-8") as saved:
+                            observations = json.load(saved)["observations"]
+                        self.assertEqual([item["supplemental"][0]["report"] for item in observations], [raw, raw])
+                        self.assertEqual(observations[0]["supplemental"][0]["sources"][0]["bills"].keys(), {"worker-first"})
+                finally:
+                    self.directory = original
+
+    def test_incomplete_first_supplemental_evidence_cannot_be_omitted_for_admission(self) -> None:
+        first, second, arguments = self.recovery_fixture()
+        _, entry, dispatched = self.supplemental_fixture(first, 30)
+        os.remove(entry["report"])
+        with patch.object(stop_check, "now", return_value="2026-01-01T00:03:00Z"):
+            code, lines = self.run_script(first, *arguments, "--dispatched-cost", dispatched)
+        self.assertEqual(code, 2, lines)
+        self.append_later_request(first)
+        code, lines = self.recover(second, arguments)
+        self.assertEqual(code, 2, lines)
+        self.assertIn("usable first observation", lines[0])
+
+    def test_recovery_preserves_complete_empty_parent_and_child_contract(self) -> None:
+        for empty_owner in ("parent", "child"):
+            for defect in (None, "compaction-unmatched", "snapshot-unmatched", "unknown request", "unknown model"):
+                with self.subTest(empty_owner=empty_owner, defect=defect), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                    original, self.directory = self.directory, folder
+                    try:
+                        first, second, arguments = self.recovery_fixture()
+                        empty = dict(requests=0, pricedRequests=0, unpricedRequests=0)
+                        if empty_owner == "child":
+                            empty.update(sessionId="empty", kind="codex-thread", file=self.write("empty.jsonl", ""))
+                            for fixture in (first, second):
+                                fixture["children"] = [dict(empty)]
+                        else:
+                            child = dict(first["parent"], sessionId="coordinator", kind="codex-thread", file=first["source"]["file"])
+                            complete = dict(second["parent"], sessionId="coordinator", kind="codex-thread", file=first["source"]["file"])
+                            first["children"], second["children"] = [child], [complete]
+                            for fixture in (first, second):
+                                fixture["source"].update(sessionId="empty", file=self.write("empty.jsonl", ""))
+                                fixture["parent"] = dict(empty)
+                        if defect:
+                            target = first["parent"] if empty_owner == "parent" else first["children"][0]
+                            if defect.startswith("unknown"):
+                                other = second["parent"] if empty_owner == "parent" else second["children"][0]
+                                for summary in (target, other):
+                                    summary.update({"unpricedRequests": 1} if defect == "unknown request" else {"unpricedModels": ["unknown"]})
+                            else:
+                                target["coverageDefect"] = {"cause": defect}
+                        self.observe_first(first, arguments)
+                        code, lines = self.recover(second, arguments)
+                        self.assertEqual(code, 2 if defect else 0, lines)
+                        if not defect:
+                            self.assertIn("priced spend: 5.00 USD (this run 5.00 USD, of it dispatched 0.00 USD, earlier runs 0.00 USD)", lines)
+                    finally:
+                        self.directory = original
+
+    def test_recovery_refuses_changed_evidence_and_unresolved_costs(self) -> None:
+        cases = ("missing snapshot", "unknown price", "contradictory counters", "build", "source", "rewrite", "replacement",
+                 "request identities", "unidentified request", "dollars", "count", "earlier gap", "start", "end", "older end")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                original = self.directory
+                self.directory = folder
+                try:
+                    first, second, arguments = self.recovery_fixture()
+                    if case in ("earlier gap", "unidentified request"):
+                        if case == "earlier gap":
+                            first["parent"]["coverageDefect"]["cause"] = "compaction-unmatched"
+                        else:
+                            first["parent"]["requests"] = 2
+                        code, lines = self.run_script(first, *arguments, "--snapshot-recovery", "first")
+                        self.assertEqual(code, 2, lines)
+                        continue
+                    self.observe_first(first, arguments)
+                    if case == "missing snapshot":
+                        second = first
+                    elif case == "unknown price":
+                        second["combined"].update(unpricedRequests=1, unpricedModels=["unknown"])
+                    elif case == "contradictory counters":
+                        second["parent"]["coverageDefect"] = {"cause": "bill-conflict"}
+                    elif case == "build":
+                        second["buildCommit"] = "b" * 40
+                    elif case == "source":
+                        second["source"]["sessionId"] = "other"
+                    elif case == "rewrite":
+                        with open(first["source"]["file"], "rb+") as source:
+                            source.write(b" ")
+                    elif case == "replacement":
+                        path = first["source"]["file"]
+                        os.rename(path, path + ".old")
+                        with open(path + ".old", "rb") as source, open(path, "wb") as replacement:
+                            replacement.write(source.read())
+                    elif case == "request identities":
+                        with open(first["source"]["file"], "a", encoding="utf-8") as source:
+                            source.write(json.dumps({"type": "token_usage_record", "timestamp": "2026-01-01T00:01:30Z",
+                                                    "payload": {"thread_id": "coordinator", "response_id": "extra"}}) + "\n")
+                    elif case == "dollars":
+                        second["combined"]["pricedCostUsd"] = 6
+                    elif case == "count":
+                        second["combined"]["requests"] = 2
+                    else:
+                        key = "since" if case == "start" else "until"
+                        value = {"start": "2026-01-01T00:00:30Z", "end": "2026-01-01T00:02:30Z",
+                                 "older end": "2026-01-01T00:01:30Z"}[case]
+                        second["window"][key] = value
+                        arguments[arguments.index("--" + key) + 1] = value
+                    code, lines = self.recover(second, arguments)
+                    self.assertEqual(code, 2, lines)
+                    self.assertIn("snapshot recovery refused", lines[0])
+                    self.assertNotEqual(self.recover(second, arguments)[0], 0)
+                finally:
+                    self.directory = original
+
+    def test_recovery_needs_a_later_model_request_and_no_intervening_launch(self) -> None:
+        for case in ("same request", "no completed request", "worker launched", "same observation time"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                original, self.directory = self.directory, folder
+                try:
+                    first, second, arguments = self.recovery_fixture()
+                    self.observe_first(first, arguments)
+                    request = "first" if case == "same request" else "missing" if case == "no completed request" else "later"
+                    flags = [] if case == "worker launched" else ["--no-worker-launches"]
+                    stamp = "2026-01-01T00:03:00Z" if case == "same observation time" else "2026-01-01T00:05:00Z"
+                    with patch.object(stop_check, "now", return_value=stamp):
+                        code, lines = self.run_script(second, *arguments, "--snapshot-recovery", "observe",
+                                                      "--recovery-request", request, *flags)
+                    self.assertEqual(code, 2, lines)
+                finally:
+                    self.directory = original
+
+    def test_recovery_reserves_every_current_commitment_before_admission(self) -> None:
+        for case in ("recovery", "coordinator", "check", "verification", "workers", "close", "negative bound", "insufficient", "ceiling", "absolute"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                original, self.directory = self.directory, folder
+                try:
+                    first, second, arguments = self.recovery_fixture()
+                    self.observe_first(first, arguments)
+                    if case in ("recovery", "coordinator", "check", "verification", "workers", "close", "negative bound"):
+                        path = arguments[arguments.index("--recovery-commitments") + 1]
+                        with open(path, encoding="utf-8") as file:
+                            commitments = json.load(file)
+                        if case == "negative bound":
+                            commitments["coordinator"] = -1
+                        else:
+                            commitments.pop(case)
+                        self.write("commitments.json", commitments)
+                    elif case == "insufficient":
+                        arguments[arguments.index("--post-cutoff-reserve") + 1] = "4"
+                    else:
+                        arguments[arguments.index("--ceiling") + 1] = "13" if case == "ceiling" else "6.5"
+                    code, lines = self.recover(second, arguments)
+                    self.assertEqual(code, 1 if case in ("ceiling", "absolute") else 2, lines)
+                finally:
+                    self.directory = original
+
+    def test_recovery_deduplicates_dispatched_sources_and_requires_both_bounds(self) -> None:
+        for case in ("same window", "wrong start", "wrong end", "missing bound"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                original, self.directory = self.directory, folder
+                try:
+                    first, second, arguments = self.recovery_fixture()
+                    _, entry, dispatched = self.supplemental_fixture(first, 1)
+                    arguments += ["--dispatched-cost", dispatched]
+                    self.observe_first(first, arguments)
+                    if case == "wrong start":
+                        entry["since"] = "2025-12-31T23:00:00Z"
+                    elif case == "wrong end":
+                        entry["until"] = "2026-01-01T00:01:30Z"
+                    elif case == "missing bound":
+                        entry.pop("since")
+                    self.write("dispatched.json", {"sources": [entry, entry, dict(entry, sessionId="coordinator")]})
+                    code, lines = self.recover(second, arguments)
+                    self.assertEqual(code, 0 if case == "same window" else 2, lines)
+                    if case == "same window":
+                        self.assertIn("priced spend: 6.00 USD (this run 6.00 USD, of it dispatched 1.00 USD, earlier runs 0.00 USD)", lines)
+                finally:
+                    self.directory = original
+
+    def linked_recovery_fixture(self) -> tuple[dict, dict, list[str]]:
+        first, second, arguments = self.recovery_fixture()
+        child_file = self.write("child.jsonl", json.dumps({"type": "token_usage_record", "timestamp": "2026-01-01T00:01:00Z",
+                                                        "payload": {"thread_id": "child", "response_id": "child-request"}}) + "\n")
+        child = dict(sessionId="child", kind="codex-thread", file=child_file, requests=1, unpricedRequests=0,
+                     pricedCostUsd=1, costUsd=1, coverage="recorded-reconciled")
+        for fixture in (first, second):
+            fixture["children"] = [dict(child)]
+            fixture["combined"].update(requests=2, pricedCostUsd=6)
+        second["combined"]["costUsd"] = 6
+        return first, second, arguments
+
+    def test_recovery_keeps_linked_codex_threads_in_the_same_window(self) -> None:
+        first, second, arguments = self.linked_recovery_fixture()
+        self.observe_first(first, arguments)
+        code, lines = self.recover(second, arguments)
+        self.assert_verdict(code, lines, "continue")
+        self.assertIn("priced spend: 6.00 USD (this run 6.00 USD, of it dispatched 0.00 USD, earlier runs 0.00 USD)", lines)
+
+    def test_recovery_accepts_an_identified_codex_child_only_snapshot_defect(self) -> None:
+        first, second, arguments = self.linked_recovery_fixture()
+        first["parent"] = dict(second["parent"])
+        first["children"][0].update(costUsd=None, requestCountExact=False, coverage="billed-with-unknown-coverage",
+                                     coverageDefect={"cause": "snapshot-unmatched", "since": "2026-01-01T00:01:00Z"})
+        self.observe_first(first, arguments)
+        code, lines = self.recover(second, arguments)
+        self.assert_verdict(code, lines, "continue")
 
     def test_continues_at_51_requests_and_70000_tokens_under_the_ceiling(self) -> None:
         code, lines = self.run_script(
