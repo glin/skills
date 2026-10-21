@@ -40,17 +40,9 @@ The worker writes status, commit, checks, review result, blockers, and next safe
 
 ## Avoid model polling
 
-The launcher process waits for the worker outside the model loop. It sends one notification after the worker exits or reaches a terminal state. The originating model does not poll logs, agents, files, or process state.
+A waited launcher blocks outside the model loop until Arc publishes the worker's outcome. The host notifies the origin when that command exits. Arc can publish `needs-input` or `unknown` while the worker still runs. The origin then reads `arc dispatch status` or attaches to the worker. The originating model does not poll logs, agents, files, or process state. The local `/dispatch` launcher delivers no callback into an existing session.
 
-Current Codex CLI exposes:
-
-```text
-codex queue --thread <session-id> --message <text>
-```
-
-Verify the command with `codex queue --help` before relying on it. A launcher can queue one completion message to an existing session on the shared app-server daemon. The message names the run status and result path. The local `/dispatch` launcher implements this for detached Codex workers through `--notify-thread <session-id>`.
-
-Current Claude Code CLI help exposes background sessions, attach, logs, stop, remove, and resume. It does not expose a general cross-session queue command. Treat a result file as the return path unless the active runtime provides a verified callback or team-message channel.
+Current Claude Code CLI help exposes background sessions, attach, logs, stop, remove, and resume. It does not expose a general cross-session queue command. Treat a result file as the return path unless the active runtime provides a verified team-message channel.
 
 ## Autonomy limits
 

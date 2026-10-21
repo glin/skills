@@ -22,7 +22,7 @@ The single source for the model shorthands used by `consult`, `pre-commit-review
 | `flash` | Gemini 3.5 Flash |
 | `all` | opus + sonnet + sol + gemini in parallel |
 
-`haiku` selects `claude-haiku-5-5`. Pass this explicit ID to Claude native children. Both dispatch launchers expand the shorthand. `sonnet` passes through to the Claude CLI's own alias, and an explicit `claude-sonnet-5` ID still selects Sonnet 5. `sol` selects `gpt-6.1-sol`. `sol6` selects `gpt-6-sol`. `luna` and `luna6` select `gpt-6-luna`. `astra` selects `gpt-6-astra`. `terra` selects `gpt-5.6-terra`. GPT-6 Luna serves small reviews that do not need a deep review.
+`haiku` selects `claude-haiku-5-5`. Pass this explicit ID to Claude native children. `dispatch.py` and `arc run` expand the shorthand. `sonnet` passes through to the Claude CLI's own alias, and an explicit `claude-sonnet-5` ID still selects Sonnet 5. `sol` selects `gpt-6.1-sol`. `sol6` selects `gpt-6-sol`. `luna` and `luna6` select `gpt-6-luna`. `astra` selects `gpt-6-astra`. `terra` selects `gpt-5.6-terra`. GPT-6 Luna serves small reviews that do not need a deep review.
 
 Explicit IDs retain their version. [model-providers.md](model-providers.md) owns provider-qualified IDs, availability checks, native inheritance, and dispatch selection.
 
@@ -44,7 +44,7 @@ Use this checklist only when changing the shared model selection.
 
 - Check the runner's catalog when it exposes one, and the provider's documented IDs, supported effort, and delegation support.
 - Follow [model-providers.md](model-providers.md) for each newly claimed model/provider combination and record its completed delegation check.
-- Update this reference and both `dispatch` launchers together. Preserve explicit IDs and versioned aliases.
+- Update this reference, `dispatch.py` and Arc's standalone model table together. Preserve explicit IDs and versioned aliases.
 - Update the owning price table with exact model and provider boundaries, context bands, cache rates, and service tiers. Arc owns the rate table.
 - Extend `session-cost-audit/scripts/test_transcript_usage.py` and `test_arc_cost_parity.py`. Run both with `ARC_REPO` pointing to the owner's updated checkout.
 - Check downstream pricing adapters forward the source and window to Arc. Consume its report instead of loading or copying rates.

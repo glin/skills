@@ -82,6 +82,8 @@ python3 "$SKILL_DIR/scripts/write_record.py" <run folder> --out <record file>
 
 ## Bounded triage updates
 
+After successful record publication, settle owned inputs through [../../references/artifact-closure.md](../../references/artifact-closure.md) before retirement. Preserve all retry inputs on publication failure. Record opt-in remains unchanged.
+
 Use `references/scripts/triage.py` from the explicit shared skills root. Default `TRIAGE_SHARED_ROOT` to the owning skill's text-derived `SKILLS_DIR`. For copied installations, set `TRIAGE_SHARED_ROOT` to the installed shared skills directory before running these commands. Export it so the recorder uses the same root. Initialize with the current key SHA-256 and `--expected-target absent`. Every later mutation requires current `--expected-key` and `--expected-target` SHA-256 digests. `calls` updates a subset of known labels. `findings` accepts the complete finding list on stdin, including later fix commits. Calls must be primitive strings. Final recording requires complete calls. Each control JSON must fit within 1 MiB.
 
 ```bash

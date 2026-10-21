@@ -22,7 +22,7 @@ Use the workflow's existing round or correction-batch identifier for implementer
 
 A coverage continuation retains its review job and round, with `coverage-2` appended for the second attempt. A launcher retry retains its job and round, with `retry-2` appended. Increment the attempt suffix for later authorized attempts. Neither attempt creates a review round or authorizes more work.
 
-For a writable Claude retry, check whether the original worktree exists. If it exists, pass its path through `--cwd` and omit `--worktree`. Keep its original branch and path even when the retry name changes.
+For a writable retry, check whether the original worktree exists. If it exists, pass its path through `--cwd`. Keep its original branch and path even when the retry name changes.
 
 A carry review checks a rebase or interaction with a moved target. Use its recorded round identifier when the workflow assigns one. Otherwise retain the round whose review is being carried. The explicit `carry-review` job distinguishes it from reviewing accepted corrections.
 

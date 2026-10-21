@@ -1,5 +1,7 @@
 # Pre-commit review reasons
 
+Successful opted-in record publication precedes input retirement, and failed publication preserves retry inputs. A disposition inventory accounts for small ignored logs and named readers without treating unresolved findings as active terminal logs. Ordinary reviews retain their existing record opt-in.
+
 [SKILL.md](SKILL.md) holds the review rules. This file gives the failure each rule prevents.
 
 Before you change a review rule, read its entry here. Add the new reason in the same commit. Write it as one to three sentences on the failure the rule prevents, with no dates, hashes or history.
@@ -42,7 +44,7 @@ Runners use different default efforts. Identical prompt bytes, separate result d
 
 Forced dispatch added a second completion route where the native route already worked. A report-only role in a prompt does not enforce read-only file access, so a task that needs a sandbox still dispatches. See [Context and delegation](../../docs/orchestration.md#context-and-delegation).
 
-A finished worker, an accepted callback and a consumed report are different states. Receipt claims and durable acknowledgments record what the parent consumed, so an interrupted handler does not repeat saved effects. See [Detached dispatch receipts](../../docs/orchestration.md#detached-dispatch-receipts) and [Retained action effects](../../docs/orchestration.md#retained-action-effects).
+Each dispatched review selects one completion route. A foreground marked launch with an explicit log path retains its accepted session marker in the parent command output. Separate observation carries `--read-only` so its report stays blinded. Arc delivers no callback. See [Dispatch completion](../../docs/orchestration.md#dispatch-completion) and [Retained action effects](../../docs/orchestration.md#retained-action-effects).
 
 A focused re-review reads the fix delta first, so the smaller budget goes to the corrections. A range diff stops a moved base from looking like part of the fix.
 

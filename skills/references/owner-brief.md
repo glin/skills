@@ -8,15 +8,24 @@ Name the authorized outcome, exclusions, repository baseline, owned paths, check
 
 When a brief tells a worker how to launch a session or run a tool, write the full command line. Use only flags that the installed tool's `--help` lists. A flag copied from a sibling tool, such as `arc start --agent-run` given to `dispatch.py`, stops the worker until the owner answers.
 
+For a waited dispatch, the brief keeps launch and observation separate. Launch in the foreground with `--arc-dispatch --log PATH` and explicit model and effort. Background the printed observation command for your shell with `--wait-launch LAUNCH_ID`. Carry `--read-only` for a review and preserve `ARC_BIN` and `ARC_HOME` across both commands. A pending native identity or observation deadline never authorizes another launch.
+
 Before proposing or adding a visible control, dialog, panel, or interaction, compare it with the owner's request. Reviewers perform the same comparison for every added surface. If an inferred requirement needs an unauthorized visible addition, pause that addition and request approval. Continue independent approved work.
 
 ## Session labels and links
 
-For agent launches and fresh-session handoffs in Arc, inherit the launching session's current labels unless the author specifies another set.
-Read the parent labels before launch and confirm the child's saved labels afterward through the scoped Arc CLI.
+For Arc launches, determine the session's role from its job, not its model, launch transport, or reader or agent ownership.
+Start internal implementers, reviewers, verifiers, consultants and falsification workers without labels unless the author explicitly requests worker labels.
+Apply this default to native workers and dispatched workflow workers.
+Inherit the launching session's current labels for author-requested independent sessions and coordinators the author intends to follow.
+Use another set when the author specifies one.
+Read parent labels before launch only when inheritance applies.
+Confirm requested or inherited labels on the new session afterward through the scoped Arc CLI.
 Use the installed `arc-sessions` skill for window selection, label changes and delivery outcomes.
-Add inherited labels without removing unrelated labels unless the author requests an exact replacement.
+Add only requested or applicable inherited labels without removing unrelated labels unless the author requests an exact replacement.
+Leave existing sessions unchanged.
 Keep labels separate from the session name and reader or agent ownership.
+Preserve agent-run classification, parent/child links and launch transport.
 Report launched sessions with named Arc session links when their destinations are verified in the invoking window.
 Follow the installed skill's link syntax and identity checks.
 Otherwise report the name, complete session ID and scope limitation as plain text.

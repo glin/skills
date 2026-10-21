@@ -1,607 +1,364 @@
 #!/usr/bin/env bash
+# Drives dispatch.py and dispatch.sh through a stub arc that records its arguments, and
+# checks how each launcher maps its flags to arc run and prints Arc's replies. Each new
+# process can take a second on Windows, so the checks use Bash builtins.
 set -euo pipefail
+shopt -s nullglob
 
 skill_dir="$(cd "$(dirname "$0")" && pwd)"
 tmp="$(mktemp -d -t dispatch-test.XXXXXX)"
-cleanup() {
-  if [ -n "${tmp:-}" ] && [ -d "$tmp" ]; then
-    # Windows retains a worker's current directory until its process exits.
-    local cleanup_deadline=$((SECONDS + 10))
-    while [ -d "$tmp/work" ] && ! rmdir "$tmp/work" 2>/dev/null; do
-      if [ "$SECONDS" -ge "$cleanup_deadline" ]; then
-        printf 'fixture workers still hold their directory\n' >&2
-        return 1
-      fi
-      sleep 0.05
-    done
-    rm -rf -- "$tmp"
-  fi
-}
-trap cleanup EXIT
-
-mkdir -p "$tmp/bin" "$tmp/work"
-export ARC_BIN="$tmp/bin/missing-arc"
+trap 'rm -rf -- "$tmp"' EXIT
+tmp_posix="$tmp"
+case "$OSTYPE" in
+  msys*|cygwin*)
+    # Native Windows Python reads these paths, so they use the drive-letter form.
+    tmp="$(cd "$tmp" && pwd -W)"
+    DISPATCH_CLI_BASH="$(cygpath -w "$BASH")"
+    export DISPATCH_CLI_BASH
+    ;;
+esac
+mkdir -p "$tmp/bin" "$tmp/work" "$tmp/extra" "$tmp/calls"
 printf 'Finish the bounded test task.\n' > "$tmp/prompt.md"
 
-cat > "$tmp/bin/codex" <<'STUB'
+cat > "$tmp/bin/arc" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-case "${1:-}" in
-  exec)
-    if [ -n "${DISPATCH_TEST_CODEX_ARGS:-}" ]; then printf '%s\n' "$@" > "$DISPATCH_TEST_CODEX_ARGS"; fi
-    shift
-    result=""
+shopt -s nullglob
+dir="$DISPATCH_TEST_ARC_DIR"
+calls=("$dir"/call-*)
+printf '%s\n' "$@" > "$dir/call-${#calls[@]}"
+launch=launch-1
+case "$1" in
+  windows) printf '{"version":1,"windows":[],"complete":true}\n' ;;
+  run)
+    printf '%s\n' "${CLAUDE_CODE_PROMPT_CACHE_TTL:-unset}" > "$dir/ttl"
+    provider=""; name=""; wait=0; marker=0
     while [ $# -gt 0 ]; do
       case "$1" in
-        -o) result="$2"; shift 2 ;;
+        --provider) provider="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        --completion) if [ "$2" = wait ]; then wait=1; fi; shift 2 ;;
+        --arc-dispatch) marker=1; shift ;;
         *) shift ;;
       esac
     done
-    printf 'worker output\n'
-    if [ -n "$result" ]; then printf 'durable result\n' > "$result"; fi
-    exit "${DISPATCH_TEST_EXEC_STATUS:-0}"
-    ;;
-  queue)
-    shift
-    if [ -n "${DISPATCH_TEST_EXPECT_RESULT:-}" ] && [ ! -f "$DISPATCH_TEST_EXPECT_RESULT" ]; then
-      printf 'callback arrived before the result file\n' >&2
-      exit 9
+    if [ -n "${DISPATCH_TEST_ARC_REFUSE:-}" ]; then printf '%s\n' "$DISPATCH_TEST_ARC_REFUSE" >&2; exit 1; fi
+    if [ -n "${DISPATCH_TEST_ARC_STATE:-}" ]; then
+      printf '{"launchId":"%s","transport":"standalone","state":"%s","completion":"manual","origin":"o","error":"The launch did not open. Read \\"its status\\" in C:\\\\arc before starting another session."}\n' "$launch" "$DISPATCH_TEST_ARC_STATE"
+    elif [ "$wait" = 1 ]; then
+      printf '{"launchId":"%s","state":"deadline"}\n' "$launch"
+    else
+      printf '{"launchId":"%s","transport":"standalone","state":"starting","completion":"manual","origin":"o"}\n' "$launch"
     fi
-    printf '%s\n' "$*" >> "$DISPATCH_TEST_QUEUE_LOG"
+    if [ "$marker" = 1 ] && [ -z "${DISPATCH_TEST_PENDING:-}" ]; then
+      printf 'ARC_DISPATCH_SESSION={"agent":"%s","session_id":"12345678-1234-1234-1234-123456789abc","name":"%s"}\n' "$provider" "$name"
+    fi
     ;;
-  *)
-    printf 'unexpected codex command: %s\n' "${1:-}" >&2
-    exit 2
+  dispatch)
+    case "$2" in
+      wait|result)
+        if [ "${DISPATCH_TEST_ARC_FAIL:-}" = "$2" ]; then printf 'Arc %s is unavailable.\n' "$2" >&2; exit 1; fi
+        ;;&
+      wait)
+        waits=("$dir"/wait-*)
+        : > "$dir/wait-${#waits[@]}"
+        if [ "${#waits[@]}" -lt "${DISPATCH_TEST_ARC_DEADLINES:-0}" ]; then
+          printf '{"launchId":"%s","state":"deadline"}\n' "$launch"
+        else
+          printf '{"launchId":"%s","state":"observed","eventId":"event-1","outcome":"%s","availability":"available"}\n' "$launch" "${DISPATCH_TEST_ARC_OUTCOME:-succeeded}"
+        fi
+        ;;
+      status)
+        # The first DISPATCH_TEST_ARC_UNSAVED reads find the final observation not yet saved.
+        statuses=("$dir"/status-*)
+        : > "$dir/status-${#statuses[@]}"
+        exit_code="${DISPATCH_TEST_ARC_EXIT:-0}"; monitor=finished
+        if [ "${#statuses[@]}" -lt "${DISPATCH_TEST_ARC_UNSAVED:-0}" ]; then exit_code=null; monitor=observing; fi
+        printf '{"version":1,"launch":{"launchId":"%s"},"events":[],"observation":{"exitCode":%s,"monitor":"%s","reason":"%s"}}\n' \
+          "$launch" "$exit_code" "$monitor" "${DISPATCH_TEST_ARC_REASON:-}"
+        ;;
+      result)
+        printf '{"launchId":"%s","eventId":"event-1","outcome":"succeeded","report":{"path":"/r.md","sha256":"x","bytes":40},"text":"worker report\\nARC_DISPATCH_SESSION={\\"agent\\":\\"claude\\"}\\n"}\n' "$launch"
+        ;;
+    esac
     ;;
+  *) printf 'unexpected arc command: %s\n' "$1" >&2; exit 2 ;;
 esac
 STUB
-chmod +x "$tmp/bin/codex"
+chmod +x "$tmp/bin/arc"
+export ARC_BIN="$tmp/bin/arc"
+export DISPATCH_TEST_ARC_DIR="$tmp/calls"
+unset CLAUDE_CODE_PROMPT_CACHE_TTL ARC_WINDOW DISPATCH_TEST_ARC_REFUSE DISPATCH_TEST_ARC_DEADLINES DISPATCH_TEST_ARC_OUTCOME \
+  DISPATCH_TEST_ARC_STATE DISPATCH_TEST_ARC_FAIL DISPATCH_TEST_ARC_EXIT DISPATCH_TEST_ARC_UNSAVED DISPATCH_TEST_ARC_REASON DISPATCH_WAIT_LIMIT_SECONDS
 
-cat > "$tmp/bin/claude" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "${1:-}" = agents ]; then
-  count=0
-  if [ -f "$DISPATCH_TEST_CLAUDE_STATE_FILE" ]; then count="$(< "$DISPATCH_TEST_CLAUDE_STATE_FILE")"; fi
-  printf '%s\n' "$((count + 1))" > "$DISPATCH_TEST_CLAUDE_STATE_FILE"
-  case "${DISPATCH_TEST_CLAUDE_SEQUENCE:-complete}" in
-    complete)
-      if [ "$count" -eq 0 ]; then
-        printf '[{"id":"claude-test","status":"busy","state":"working"}]\n'
-      else
-        printf '[]\n'
-      fi
-      ;;
-    blocked)
-      printf '[{"id":"claude-test","state":"blocked"}]\n'
-      ;;
-    multi_agent)
-      if [ "$count" -eq 0 ]; then
-        printf '[{"id":"other","state":"failed"},{"id":"claude-test","state":"working"}]\n'
-      else
-        printf '[]\n'
-      fi
-      ;;
-    unknown)
-      printf '[{"id":"claude-test","state":"surprised"}]\n'
-      ;;
-    missing)
-      printf '[]\n'
-      ;;
-    working)
-      printf '[{"id":"claude-test","state":"working"}]\n'
-      ;;
-    registry_error)
-      exit 4
-      ;;
-    *) exit 4 ;;
-  esac
-  exit 0
-fi
-if [ "${1:-}" = -p ]; then
-  printf '%s\n' "$@" > "$DISPATCH_TEST_CLAUDE_ARGS"
-  cat >/dev/null
-  session_id=""
-  args=("$@")
-  for ((i=0; i<${#args[@]}; i++)); do
-    if [ "${args[i]}" = --session-id ]; then session_id="${args[i+1]}"; fi
-  done
-  if [ -n "${DISPATCH_TEST_CLAUDE_SESSION_ID:-}" ]; then session_id="$DISPATCH_TEST_CLAUDE_SESSION_ID"; fi
-  if [ -n "${DISPATCH_TEST_CLAUDE_SLEEP:-}" ]; then sleep "$DISPATCH_TEST_CLAUDE_SLEEP"; fi
-  if [ -n "$session_id" ]; then
-    printf '{"result":"read-only result","session_id":"%s"}\n' "$session_id"
-  else
-    printf '{"result":"read-only result"}\n'
+fail() { printf '%s: %s\n' "$launcher" "$1" >&2; exit 1; }
+# Windows Python prints C:\dir paths. Git Bash prints /c/dir paths, or /tmp paths for the
+# fixture directory. Each becomes the C:/dir form.
+normalize() {
+  set -- "${1//$tmp_posix/$tmp}"
+  REPLY="${1//\\//}"
+  if [[ "$REPLY" =~ ^(.*[\ =])?/([a-z])/(.*)$ ]]; then
+    REPLY="${BASH_REMATCH[1]}${BASH_REMATCH[2]^^}:/${BASH_REMATCH[3]}"
   fi
-  exit "${DISPATCH_TEST_CLAUDE_PRINT_STATUS:-0}"
-fi
-printf '%s\n' "$@" > "$DISPATCH_TEST_CLAUDE_ARGS"
-if [ -n "${DISPATCH_TEST_CLAUDE_STDIN:-}" ]; then cat > "$DISPATCH_TEST_CLAUDE_STDIN"; fi
-if [ -n "${DISPATCH_TEST_CLAUDE_BG_STATUS:-}" ]; then exit "$DISPATCH_TEST_CLAUDE_BG_STATUS"; fi
-args=("$@")
-name=""
-for ((i=0; i<${#args[@]}; i++)); do
-  if [ "${args[i]}" = -n ]; then name="${args[i+1]}"; fi
-done
-if [ -n "${DISPATCH_TEST_CLAUDE_BG_DIAGNOSTIC:-}" ]; then
-  printf 'diagnostic: backgrounded · deadbeef · decoy\n'
-fi
-suffix=""
-if [ -n "${DISPATCH_TEST_CLAUDE_BG_IDLE:-}" ]; then suffix=$' (idle \u2014 send a prompt to start)'; fi
-printf 'backgrounded · %s · %s%s\n' "${DISPATCH_TEST_CLAUDE_BG_ID:-claude-test}" "$name" "$suffix"
-if [ -n "${DISPATCH_TEST_CLAUDE_BG_DUPLICATE:-}" ]; then
-  printf 'backgrounded · feedface · %s\n' "$name"
-fi
-STUB
-chmod +x "$tmp/bin/claude"
-
-wait_for_queue() {
-  local queue_log="$1"
-  local attempt
-  for attempt in $(seq 1 100); do
-    if [ -s "$queue_log" ]; then return 0; fi
-    sleep 0.05
+}
+read_lines() {
+  local -n into="$1"
+  into=()
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    normalize "${line%$'\r'}"
+    into+=("$REPLY")
+  done < "$2"
+}
+# Run one launcher, then load the arc run arguments, the output, and the error text.
+launch() {
+  local file
+  rm -f -- "$tmp/calls/"*
+  code=0
+  if [ "$launcher" = py ]; then
+    python3 "$skill_dir/dispatch.py" ${launch_marker:+--arc-dispatch} "$@" > "$tmp/out" 2> "$tmp/err" || code=$?
+  else
+    bash "$skill_dir/dispatch.sh" ${launch_marker:+--arc-dispatch} "$@" > "$tmp/out" 2> "$tmp/err" || code=$?
+  fi
+  verbs=(); run=()
+  for file in "$tmp/calls/"call-*; do
+    read_lines call "$file"
+    verbs+=("${call[0]} ${call[1]:-}")
+    if [ "${call[0]}" = run ]; then run=("${call[@]}"); fi
   done
-  printf 'callback was not queued\n' >&2
+  read_lines out "$tmp/out"
+  read_lines err "$tmp/err"
+}
+has_pair() {
+  local i
+  for ((i = 0; i + 1 < ${#run[@]}; i++)); do
+    if [ "${run[i]}" = "$1" ] && [ "${run[i + 1]}" = "$2" ]; then return 0; fi
+  done
   return 1
 }
-
-assert_single_notice() {
-  local queue_log="$1"
-  local expected="$2"
-  wait_for_queue "$queue_log"
-  [ "$(wc -l < "$queue_log")" -eq 1 ]
-  grep -F -- "$expected" "$queue_log" >/dev/null
+expect_pair() { has_pair "$1" "$2" || fail "arc run lacks $1 $2"; }
+has_flag() { local item; for item in "${run[@]}"; do if [ "$item" = "$1" ]; then return 0; fi; done; return 1; }
+expect_flag() { has_flag "$1" || fail "arc run lacks $1"; }
+reject_flag() { if has_flag "$1"; then fail "arc run carries $1"; fi; }
+has_line() { local -n lines="$1"; local item; for item in "${lines[@]}"; do if [[ "$item" == *"$2"* ]]; then return 0; fi; done; return 1; }
+expect_out() { has_line out "$1" || fail "output lacks: $1"; }
+reject_out() { if has_line out "$1"; then fail "output carries: $1"; fi; }
+expect_no_arc_call() { [ "${#verbs[@]}" = 0 ] || fail "$1 called arc as: ${verbs[*]}"; }
+expect_exit() { [ "$code" = "$1" ] || fail "$2 exited $code: ${err[*]}"; }
+# Arc's marker is the last line, and no other line starts with it.
+marker_count() { local item; markers=0; for item in "${out[@]}"; do if [[ "$item" == ARC_DISPATCH_SESSION=* ]]; then markers=$((markers + 1)); fi; done; }
+expect_marker_last() {
+  marker_count
+  [[ "${out[-1]}" == ARC_DISPATCH_SESSION=* ]] || fail "the marker is not the last line"
+  [ "$markers" = 1 ] || fail "$markers lines carry the marker"
 }
 
-# Stand in for open_window's real terminal launcher on the current platform, so an
-# --attach test can run without ever opening a real window, on any platform. Leaves the
-# stub's name in $STUB_LAUNCHER_NAME, after confirming PATH resolves it to the stub and
-# not to a real launcher; the caller runs dispatch.sh with "$tmp/term-bin" prepended to
-# PATH. Called plain, not in a command substitution, because a set TMUX (unset here on
-# the non-Windows, non-Darwin branch) would make open_window reuse the running session
-# instead of this stub, and a subshell call would drop that unset on return.
-stub_terminal_launcher() {
-  local resolved
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) STUB_LAUNCHER_NAME=wt ;;
-    Darwin) STUB_LAUNCHER_NAME=osascript ;;
-    *) STUB_LAUNCHER_NAME=x-terminal-emulator; unset TMUX ;;
-  esac
-  mkdir -p "$tmp/term-bin"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/term-bin/$STUB_LAUNCHER_NAME"
-  chmod +x "$tmp/term-bin/$STUB_LAUNCHER_NAME"
-  resolved="$(PATH="$tmp/term-bin:$PATH" command -v "$STUB_LAUNCHER_NAME")"
-  if [ "$resolved" != "$tmp/term-bin/$STUB_LAUNCHER_NAME" ]; then
-    printf '%s resolves to something other than this test'"'"'s stub; refusing to run dispatch.sh --attach, which would open a real terminal window\n' "$STUB_LAUNCHER_NAME" >&2
-    return 1
-  fi
-}
-
-export CODEX_BIN="$tmp/bin/codex"
-export CLAUDE_BIN="$tmp/bin/claude"
-case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*)
-    printf '@"%s" "%s" %%*\r\n' "$(cygpath -w "$(command -v bash)")" "$(cygpath -w "$tmp/bin/codex")" > "$tmp/bin/codex.cmd"
-    printf '@"%s" "%s" %%*\r\n' "$(cygpath -w "$(command -v bash)")" "$(cygpath -w "$tmp/bin/claude")" > "$tmp/bin/claude.cmd"
-    export CODEX_BIN="$(cygpath -w "$tmp/bin/codex.cmd")"
-    export CLAUDE_BIN="$(cygpath -w "$tmp/bin/claude.cmd")"
-    ;;
-esac
-export DISPATCH_TEST_CLAUDE_ARGS="$tmp/claude-args.log"
-
-mkdir -p "$tmp/codex-home"
-for provider in openai amazon-bedrock; do
-  printf 'model_provider = "%s"\n\n[model_providers.amazon-bedrock]\nmodel_provider = "amazon-bedrock"\n' "$provider" > "$tmp/codex-home/config.toml"
-  for mapping in sol:gpt-6.1-sol sol6:gpt-6-sol gpt-6.1-sol:gpt-6.1-sol gpt-6-sol:gpt-6-sol gpt-5.6-sol:gpt-5.6-sol openai.gpt-6-sol:openai.gpt-6-sol; do
-    model="${mapping%%:*}"
-    expected="${mapping#*:}"
-    if [ "$provider" = amazon-bedrock ] && [[ "$expected" == gpt-* ]]; then expected="openai.$expected"; fi
-    args_file="$tmp/model-$provider-$model.args"
-    queue_file="$tmp/model-$provider-$model.queue"
-    CODEX_HOME="$tmp/codex-home" DISPATCH_TEST_CODEX_ARGS="$args_file" DISPATCH_TEST_QUEUE_LOG="$queue_file" \
-      bash "$skill_dir/dispatch.sh" --runner codex --model "$model" --prompt "$tmp/prompt.md" --cwd "$tmp/work" \
-      --log "$tmp/model-$provider-$model.log" --notify-thread model-test >/dev/null
-    wait_for_queue "$queue_file"
-    actual="$(awk '$0 == "-m" { getline; print; exit }' "$args_file")"
-    if [ "$actual" != "$expected" ]; then
-      printf 'Codex model %s on %s resolved to %s instead of %s\n' "$model" "$provider" "$actual" "$expected" >&2
-      exit 1
-    fi
+for launcher in py sh; do
+  launch_marker=""
+  for runner in claude codex; do
+    launch --runner "$runner" --owned --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+    expect_exit 2 "an unmarked $runner launch"
+    has_line err "--arc-dispatch is required" || fail "the marker refusal is missing"
+    expect_no_arc_call "an unmarked $runner launch"
   done
+  launch_marker=1
+  # A read-only Claude launch with an explicit log and the marker.
+  launch --runner claude --read-only --model sonnet --effort high --name review-1 \
+    --read-tool mcp__example__get_item --add-dir "$tmp/extra" --cwd "$tmp/work" \
+    --prompt "$tmp/prompt.md" --log "$tmp/review.log" --arc-dispatch
+  expect_exit 0 "read-only Claude"
+  expect_pair --provider claude; expect_pair --model sonnet; expect_pair --effort high
+  expect_pair --name review-1; expect_pair --read-tool mcp__example__get_item
+  expect_pair --add-dir "$tmp/extra"; expect_pair --cwd "$tmp/work"
+  expect_pair --prompt-file "$tmp/prompt.md"; expect_pair --log "$tmp/review.log"
+  expect_flag --read-only; expect_flag --arc-dispatch; expect_flag --agent-run; expect_flag --json
+  expect_pair --completion manual; reject_flag --permissions; reject_flag --agent-run=false
+  read_lines ttl "$tmp/calls/ttl"
+  [ "${ttl[0]}" = 5m ] || fail "Claude runs without the 5-minute cache"
+  expect_out "result: $tmp/review.log"; expect_out '{"launchId":"launch-1"'
+  expect_out "status: arc dispatch status launch-1"
+  expect_marker_last
+
+  # A Codex launch maps --full-access and builds the default log from the name.
+  launch --runner codex --full-access --model gpt-6.1-sol --effort xhigh --name fix-1 \
+    --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "Codex"
+  expect_pair --provider codex; expect_pair --permissions danger-full-access
+  expect_pair --log "$tmp/prompt.fix-1.log"
+  expect_flag --arc-dispatch; reject_flag --read-only
+  expect_out "result: $tmp/prompt.fix-1.last.md"
+  expect_marker_last
+
+  # A pending native identity keeps its launch even when no waiter starts.
+  export DISPATCH_TEST_PENDING=1
+  launch --runner codex --read-only --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "a pending foreground launch"
+  [ "${verbs[*]}" = "run --provider" ] || fail "foreground launch started observation"
+  expect_out "--wait-launch launch-1 --read-only"
+  reject_out "ARC_DISPATCH_SESSION="
+  unset DISPATCH_TEST_PENDING
+
+  # Observation uses only the saved launch and keeps review reports blinded.
+  launch_marker=""
+  export DISPATCH_TEST_ARC_DEADLINES=2
+  launch --wait-launch launch-1 --read-only
+  expect_exit 0 "observation of a pending launch"
+  [ "${verbs[*]}" = "dispatch wait dispatch wait dispatch wait dispatch status dispatch result" ] \
+    || fail "observation called arc as: ${verbs[*]}"
+  expect_out "result: /r.md"; reject_out "worker report"; reject_out "ARC_DISPATCH_SESSION="
+  for outcome in failed unknown needs-input; do
+    export DISPATCH_TEST_ARC_OUTCOME="$outcome" DISPATCH_TEST_ARC_DEADLINES=0 DISPATCH_TEST_ARC_EXIT=7
+    launch --wait-launch launch-1
+    expect_exit 7 "a $outcome worker exiting 7"
+    expect_out "outcome: $outcome"; expect_out "worker report"
+  done
+  unset DISPATCH_TEST_ARC_OUTCOME DISPATCH_TEST_ARC_EXIT
+  export DISPATCH_WAIT_LIMIT_SECONDS=0
+  launch --wait-launch launch-1
+  expect_exit 2 "observation past its bound"
+  expect_no_arc_call "observation past its bound"
+  unset DISPATCH_WAIT_LIMIT_SECONDS DISPATCH_TEST_ARC_DEADLINES
+  export DISPATCH_TEST_ARC_FAIL=wait
+  launch --wait-launch launch-1
+  expect_exit 2 "an absent waiter"
+  [ "${verbs[*]}" = "dispatch wait" ] || fail "an absent waiter launched a worker"
+  unset DISPATCH_TEST_ARC_FAIL
+  launch_marker=1
+
+  # --wait follows arc run past two deadlines, prints the report, and keeps the marker last.
+  export DISPATCH_TEST_ARC_DEADLINES=2
+  launch --runner codex --wait --arc-dispatch --model gpt-6.1-sol --effort high \
+    --cwd "$tmp/work" --prompt "$tmp/prompt.md" --log "$tmp/wait.log"
+  expect_exit 0 "a successful wait"
+  expect_pair --completion wait; expect_pair --log "$tmp/wait.log"
+  [ "${verbs[*]}" = "run --provider dispatch wait dispatch wait dispatch wait dispatch status dispatch result" ] \
+    || fail "wait called arc as: ${verbs[*]}"
+  expect_out "--- result"; expect_out "worker report"; expect_out "outcome: succeeded"; expect_out "worker exit: 0"
+  expect_marker_last
+
+  # A waited read-only review prints its result path and the marker, never the report text.
+  launch --runner codex --read-only --wait --arc-dispatch --model gpt-6.1-sol --effort high \
+    --cwd "$tmp/work" --prompt "$tmp/prompt.md" --log "$tmp/review.jsonl"
+  expect_exit 0 "a waited review"
+  expect_out "result: $tmp/review.last.md"; reject_out "--- result"; reject_out "worker report"
+  expect_marker_last
+
+  # A failed outcome sets a nonzero exit and prints Arc's reason.
+  export DISPATCH_TEST_ARC_DEADLINES=0 DISPATCH_TEST_ARC_OUTCOME=failed DISPATCH_TEST_ARC_REASON="The provider did not start."
+  launch --runner codex --wait --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 1 "a failed wait"
+  has_line err "Launch launch-1 ended failed: The provider did not start." || fail "a failed wait names no cause"
+  unset DISPATCH_TEST_ARC_REASON
+
+  # The worker's exit code passes through when Arc saves it after publishing the outcome.
+  export DISPATCH_TEST_ARC_EXIT=3 DISPATCH_TEST_ARC_UNSAVED=2
+  launch --runner codex --wait --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 3 "a worker that exited 3"
+  expect_out "worker exit: 3"
+
+  # A recorded exit code outside 1 to 255, such as a Windows crash code, exits 1.
+  export DISPATCH_TEST_ARC_OUTCOME=succeeded DISPATCH_TEST_ARC_EXIT=3221225477 DISPATCH_TEST_ARC_UNSAVED=0
+  launch --runner codex --wait --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 1 "a worker with a Windows crash code"
+  expect_out "worker exit: 3221225477"
+  unset DISPATCH_TEST_ARC_DEADLINES DISPATCH_TEST_ARC_OUTCOME DISPATCH_TEST_ARC_EXIT DISPATCH_TEST_ARC_UNSAVED
+
+  # A wait past its bound stops with the marker last and starts no further wait.
+  export DISPATCH_TEST_ARC_DEADLINES=5 DISPATCH_WAIT_LIMIT_SECONDS=0
+  launch --runner codex --wait --arc-dispatch --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 2 "a wait past its bound"
+  [ "${verbs[*]}" = "run --provider" ] || fail "a wait past its bound called arc as: ${verbs[*]}"
+  has_line err "Arc published no outcome for launch launch-1" || fail "the bounded wait names no cause"
+  expect_marker_last
+  unset DISPATCH_TEST_ARC_DEADLINES DISPATCH_WAIT_LIMIT_SECONDS
+
+  # An owned writable Claude request with no Arc window runs standalone under reader ownership.
+  launch --runner claude --owned --permission-mode acceptEdits --model sonnet --effort high \
+    --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "owned writable Claude"
+  has_line err "no Arc window is available" || fail "the Arc route did not report its refusal"
+  expect_pair --permissions acceptEdits; expect_flag --agent-run=false; reject_flag --agent-run
+  expect_out "attach: arc dispatch attach launch-1"
+
+  # An Arc refusal reaches the caller with Arc's exit status.
+  export DISPATCH_TEST_ARC_REFUSE="Standalone run requires --model."
+  launch --runner claude --read-only --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 1 "an Arc refusal"
+  has_line err "Standalone run requires --model." || fail "the Arc refusal text is missing"
+  unset DISPATCH_TEST_ARC_REFUSE
+
+  # A launch Arc accepted but never opened keeps its receipt, prints Arc's error, and fails.
+  export DISPATCH_TEST_ARC_STATE=accepted-with-errors
+  launch --runner codex --read-only --arc-dispatch --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 2 "an unopened launch"
+  expect_out '"state":"accepted-with-errors"'; expect_out "status: arc dispatch status launch-1"
+  reject_out "mode: arc run"
+  has_line err 'The launch did not open. Read "its status" in C:/arc before starting another session.' \
+    || fail "Arc's launch error is missing or cut at an escaped quote"
+  unset DISPATCH_TEST_ARC_STATE
+
+  # --read-tool outside Claude --read-only refuses before any Arc call, on the window route too.
+  for request in "--runner claude --owned" "--runner codex"; do
+    # shellcheck disable=SC2086
+    launch $request --read-tool mcp__example__get_item --model sonnet --effort high \
+      --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+    expect_exit 2 "--read-tool with $request"
+    has_line err "--read-tool requires --runner claude --read-only" || fail "the --read-tool refusal is missing"
+    expect_no_arc_call "--read-tool with $request"
+  done
+
+  # Attended Codex reaches arc run under reader ownership with no log and no result path.
+  launch --runner codex --attach --read-only --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "attended Codex"
+  expect_flag --attach; expect_flag --agent-run=false; reject_flag --agent-run; reject_flag --log
+  reject_out "log:"; reject_out "result:"
+
+  # An explicit --log for attended Codex reaches Arc, which refuses it.
+  launch --runner codex --attach --full-access --model gpt-6.1-sol --effort high --cwd "$tmp/work" \
+    --prompt "$tmp/prompt.md" --log "$tmp/attended.log"
+  expect_pair --log "$tmp/attended.log"; expect_flag --attach
+
+  # Attended Claude keeps its default log.
+  launch --runner claude --attach --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "attended Claude"
+  expect_flag --attach; expect_flag --agent-run=false; expect_pair --log "$tmp/prompt.log"
+
+  # A failed wait or result read still prints the marker last, so the worker stays linked.
+  export DISPATCH_TEST_ARC_DEADLINES=1
+  for step in wait result; do
+    export DISPATCH_TEST_ARC_FAIL="$step"
+    launch --runner codex --read-only --wait --arc-dispatch --model gpt-6.1-sol --effort high \
+      --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+    expect_exit 2 "a failed $step"
+    expect_marker_last
+    has_line err "launch launch-1" || fail "the failed $step names no launch"
+  done
+  unset DISPATCH_TEST_ARC_DEADLINES DISPATCH_TEST_ARC_FAIL
 done
 
-default_record="$(bash "$skill_dir/dispatch.sh" --runner claude --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
-default_mode="$(awk '$0 == "--permission-mode" { getline; print; exit }' "$DISPATCH_TEST_CLAUDE_ARGS")"
-[ "$default_mode" = auto ]
-grep -F -- 'id: claude-test' <<< "$default_record" >/dev/null
-# claude-test is not hex-shaped, so it is not a usable receipt id: no receipt prints for
-# it, with or without --arc-dispatch. A default launch with a usable id is asserted to
-# print one below, once DISPATCH_TEST_CLAUDE_BG_ID is set to a hex id.
-if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$default_record" >/dev/null; then
-  printf 'default Claude launch with an unusable id printed an Arc receipt\n' >&2; exit 1
-fi
+# A bare ARC_BIN=arc.cmd resolves through PATH to the JavaScript entry beside its directory.
+launcher=sh
+mkdir -p "$tmp/pkg/bin"
+printf '@echo off\r\n' > "$tmp/pkg/bin/arc.cmd"
+chmod +x "$tmp/pkg/bin/arc.cmd"
+cat > "$tmp/pkg/cli.cjs" <<'ENTRY'
+const run = require('child_process').spawnSync(process.env.DISPATCH_TEST_BASH, [process.env.DISPATCH_TEST_STUB, ...process.argv.slice(2)], { stdio: 'inherit' });
+process.exit(run.status ?? 1);
+ENTRY
+export DISPATCH_TEST_BASH="${DISPATCH_CLI_BASH:-$BASH}" DISPATCH_TEST_STUB="$ARC_BIN"
+saved_path="$PATH"
+export ARC_BIN=arc.cmd PATH="$tmp_posix/pkg/bin:$PATH"
+launch --runner codex --read-only --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+export ARC_BIN="$DISPATCH_TEST_STUB" PATH="$saved_path"
+expect_exit 0 "a PATH-based arc.cmd"
+expect_pair --provider codex
 
-export DISPATCH_TEST_CLAUDE_BG_ID=a1b2c3d4
-export DISPATCH_TEST_CLAUDE_STDIN="$tmp/claude-arc-stdin.txt"
-arc_writable="$(bash "$skill_dir/dispatch.sh" --runner claude --arc-dispatch --name 'Review "branch"' --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
-grep -Fx -- 'ARC_DISPATCH_SESSION={"agent":"claude","session_id":"a1b2c3d4","name":"Review \"branch\""}' <<< "$arc_writable" >/dev/null
-cmp "$tmp/prompt.md" "$DISPATCH_TEST_CLAUDE_STDIN"
-unset DISPATCH_TEST_CLAUDE_STDIN
-export DISPATCH_TEST_CLAUDE_BG_DIAGNOSTIC=1
-arc_decoy="$(bash "$skill_dir/dispatch.sh" --runner claude --arc-dispatch --name Review --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
-grep -F -- '"session_id":"a1b2c3d4"' <<< "$arc_decoy" >/dev/null
-if grep -F -- '"session_id":"deadbeef"' <<< "$arc_decoy" >/dev/null; then
-  printf 'diagnostic id became an Arc receipt\n' >&2; exit 1
-fi
-unset DISPATCH_TEST_CLAUDE_BG_DIAGNOSTIC
-export DISPATCH_TEST_CLAUDE_BG_IDLE=1
-arc_idle="$(bash "$skill_dir/dispatch.sh" --runner claude --arc-dispatch --name Review --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
-grep -F -- '"session_id":"a1b2c3d4"' <<< "$arc_idle" >/dev/null
-unset DISPATCH_TEST_CLAUDE_BG_IDLE
-export DISPATCH_TEST_CLAUDE_BG_DUPLICATE=1
-# Claude already started the session with exit 0, so ambiguous launch-line output must not
-# abort the launch: it costs only the receipt, with a warning on stderr, and the record
-# (including an id, from the loose fallback) still prints.
-ambiguous_out="$(bash "$skill_dir/dispatch.sh" --runner claude --arc-dispatch --name Review --prompt "$tmp/prompt.md" --cwd "$tmp/work" 2>"$tmp/arc-ambiguous.err")" || {
-  printf 'ambiguous Claude launch unexpectedly failed\n' >&2; exit 1
-}
-if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$ambiguous_out" >/dev/null; then
-  printf 'ambiguous Claude launch printed an Arc receipt\n' >&2; exit 1
-fi
-grep -F -- 'ambiguous Claude background launch output' "$tmp/arc-ambiguous.err" >/dev/null
-grep -F -- 'mode: writable background' <<< "$ambiguous_out" >/dev/null
-unset DISPATCH_TEST_CLAUDE_BG_DUPLICATE
-arc_unicode="$(bash "$skill_dir/dispatch.sh" --runner claude --arc-dispatch --name 'Review 😀' --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
-arc_unicode_receipt="$(grep '^ARC_DISPATCH_SESSION=' <<< "$arc_unicode")"
-python3 -c 'import json,sys; assert json.loads(sys.argv[1].split("=",1)[1])["name"]=="Review 😀"; assert sys.argv[1].isascii()' "$arc_unicode_receipt"
-arc_baseline="$(bash "$skill_dir/dispatch.sh" --runner claude --name 'Review "branch"' --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
-[ "$arc_baseline" = "$arc_writable" ]
-if ! grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$arc_baseline" >/dev/null; then
-  printf 'default Claude launch with a usable id printed no Arc receipt\n' >&2; exit 1
-fi
-mkdir -p "$tmp/no-python"
-printf '#!/usr/bin/env bash\nexit 127\n' > "$tmp/no-python/python3"
-chmod +x "$tmp/no-python/python3"
-rm -f -- "$DISPATCH_TEST_CLAUDE_ARGS"
-no_python_out="$(PATH="$tmp/no-python:$PATH" bash "$skill_dir/dispatch.sh" --runner claude --name Review --prompt "$tmp/prompt.md" --cwd "$tmp/work" 2>"$tmp/arc-no-python.err")"
-[ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] || { printf 'Claude launch without python3 never started\n' >&2; exit 1; }
-if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$no_python_out" >/dev/null; then
-  printf 'launch without python3 printed an Arc receipt\n' >&2; exit 1
-fi
-grep -F -- 'no python3 on PATH: this launch has no Arc receipt' "$tmp/arc-no-python.err" >/dev/null
+# A bare ARC_BIN=arc.cmd that PATH cannot find names the missing CLI.
+# PATH holds only system tools, so an installed Arc never runs.
+export ARC_BIN=arc.cmd PATH="/usr/bin:/bin"
+launch --runner codex --read-only --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+export ARC_BIN="$DISPATCH_TEST_STUB" PATH="$saved_path"
+expect_exit 2 "an arc.cmd missing from PATH"
+has_line err "dispatch needs the Arc CLI: put arc on PATH or set ARC_BIN" || fail "the missing arc.cmd names no PATH cause"
 
-# Callback refusal must precede either worker launch.
-for callback_runner in claude codex; do
-  rm -f -- "$DISPATCH_TEST_CLAUDE_ARGS" "$tmp/callback-codex-args"
-  if PATH="$tmp/no-python:$PATH" DISPATCH_TEST_CODEX_ARGS="$tmp/callback-codex-args" bash "$skill_dir/dispatch.sh" --runner "$callback_runner" --prompt "$tmp/prompt.md" --cwd "$tmp/work" --notify-thread fixture-parent >"$tmp/refused.out" 2>"$tmp/refused.err"; then
-    printf 'unsupported callback launch succeeded\n' >&2
-    exit 1
-  fi
-  [ ! -e "$DISPATCH_TEST_CLAUDE_ARGS" ] && [ ! -e "$tmp/callback-codex-args" ] || { printf 'worker started before callback refusal\n' >&2; exit 1; }
-  grep -F 'callback delivery requires Python 3.10' "$tmp/refused.err" >/dev/null
-done
-
-# The detached read-only branch never chooses a session id or a receipt without python3,
-# unlike the writable case above, which only loses the receipt.
-rm -f -- "$DISPATCH_TEST_CLAUDE_ARGS"
-no_python_read_only_out="$(PATH="$tmp/no-python:$PATH" bash "$skill_dir/dispatch.sh" --runner claude --read-only --name Audit --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/arc-no-python-read-only.log" 2>"$tmp/arc-no-python-read-only.err")"
-for _ in $(seq 1 100); do [ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] && break; sleep 0.05; done
-[ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] || { printf 'read-only Claude launch without python3 never started\n' >&2; exit 1; }
-if grep -F -- '--session-id' "$DISPATCH_TEST_CLAUDE_ARGS" >/dev/null; then
-  printf 'read-only Claude launch without python3 still chose a session id\n' >&2; exit 1
-fi
-if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$no_python_read_only_out" >/dev/null; then
-  printf 'read-only Claude launch without python3 printed an Arc receipt\n' >&2; exit 1
-fi
-grep -F -- 'no python3 on PATH: this launch has no Arc receipt' "$tmp/arc-no-python-read-only.err" >/dev/null
-unset DISPATCH_TEST_CLAUDE_BG_ID
-export DISPATCH_TEST_CLAUDE_BG_STATUS=7
-if bash "$skill_dir/dispatch.sh" --runner claude --arc-dispatch --prompt "$tmp/prompt.md" --cwd "$tmp/work" > "$tmp/arc-failed.out"; then
-  printf 'failed Claude launch succeeded\n' >&2; exit 1
-fi
-if grep -F -- 'ARC_DISPATCH_SESSION=' "$tmp/arc-failed.out" >/dev/null; then
-  printf 'failed Claude launch printed an Arc receipt\n' >&2; exit 1
-fi
-unset DISPATCH_TEST_CLAUDE_BG_STATUS
-
-rm -f -- "$DISPATCH_TEST_CLAUDE_ARGS"
-arc_read_only="$(bash "$skill_dir/dispatch.sh" --runner claude --read-only --arc-dispatch --name Audit --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/arc-read-only.log")"
-arc_receipt="$(grep '^ARC_DISPATCH_SESSION=' <<< "$arc_read_only")"
-[ "$(grep -c '^ARC_DISPATCH_SESSION=' <<< "$arc_read_only")" -eq 1 ]
-arc_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1].split("=",1)[1])["session_id"])' "$arc_receipt")"
-[[ "$arc_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
-python3 -c 'import json,sys; assert set(json.loads(sys.argv[1].split("=",1)[1])) == {"agent","session_id","name"}' "$arc_receipt"
-for _ in $(seq 1 100); do [ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] && break; sleep 0.05; done
-grep -Fx -- "$arc_id" "$DISPATCH_TEST_CLAUDE_ARGS" >/dev/null
-for _ in $(seq 1 100); do [ -s "$tmp/arc-read-only.log" ] && break; sleep 0.05; done
-python3 -c 'import json,sys; assert json.load(open(sys.argv[1],encoding="utf-8"))["session_id"]==sys.argv[2]' "$tmp/arc-read-only.log" "$arc_id"
-
-# A worker still running when the status-file wait times out takes the kill -0 branch on
-# the worker's own pid (from started_file), every real detached read-only launch's normal
-# path since a real claude run outlives this script's short poll.
-rm -f -- "$DISPATCH_TEST_CLAUDE_ARGS"
-export DISPATCH_TEST_CLAUDE_SLEEP=0.7
-arc_slow_read_only="$(bash "$skill_dir/dispatch.sh" --runner claude --read-only --arc-dispatch --name SlowAudit --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/arc-slow-read-only.log")"
-unset DISPATCH_TEST_CLAUDE_SLEEP
-arc_slow_receipt="$(grep '^ARC_DISPATCH_SESSION=' <<< "$arc_slow_read_only")"
-[ "$(grep -c '^ARC_DISPATCH_SESSION=' <<< "$arc_slow_read_only")" -eq 1 ]
-arc_slow_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1].split("=",1)[1])["session_id"])' "$arc_slow_receipt")"
-[[ "$arc_slow_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
-for _ in $(seq 1 100); do [ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] && break; sleep 0.05; done
-grep -Fx -- "$arc_slow_id" "$DISPATCH_TEST_CLAUDE_ARGS" >/dev/null
-
-export DISPATCH_TEST_CLAUDE_PRINT_STATUS=7
-arc_failed_read_only="$(bash "$skill_dir/dispatch.sh" --runner claude --read-only --arc-dispatch --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/arc-failed-read-only.log")"
-if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$arc_failed_read_only" >/dev/null; then
-  printf 'failed read-only Claude launch printed an Arc receipt\n' >&2; exit 1
-fi
-unset DISPATCH_TEST_CLAUDE_PRINT_STATUS
-export DISPATCH_TEST_CLAUDE_SESSION_ID=6d9e9b93-c4ae-4dac-a8c8-c01dc4f3041b
-arc_mismatched_read_only="$(bash "$skill_dir/dispatch.sh" --runner claude --read-only --arc-dispatch --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/arc-mismatched-read-only.log")"
-if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$arc_mismatched_read_only" >/dev/null; then
-  printf 'mismatched read-only Claude launch printed an Arc receipt\n' >&2; exit 1
-fi
-unset DISPATCH_TEST_CLAUDE_SESSION_ID
-arc_codex="$(bash "$skill_dir/dispatch.sh" --runner codex --arc-dispatch --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/arc-codex.log")"
-if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$arc_codex" >/dev/null; then
-  printf 'Codex launch printed an Arc receipt\n' >&2; exit 1
-fi
-
-owned_codex="$(bash "$skill_dir/dispatch.sh" --runner codex --owned --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/owned-codex.log")"
-if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$owned_codex" >/dev/null; then
-  printf 'Codex launch with --owned printed an Arc receipt\n' >&2; exit 1
-fi
-
-# --attach opens a real terminal, so this stubs this platform's launcher (the same
-# stub_terminal_launcher function the claude --attach test below uses) ahead of the real
-# one on PATH, so the run never opens a real window on the machine running it.
-stub_terminal_launcher
-owned_attach_codex="$(PATH="$tmp/term-bin:$PATH" bash "$skill_dir/dispatch.sh" --runner codex --attach --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
-if grep -F -- 'ARC_DISPATCH_SESSION=' <<< "$owned_attach_codex" >/dev/null; then
-  printf 'Codex launch with --attach printed an Arc receipt\n' >&2; exit 1
-fi
-
-export DISPATCH_TEST_CLAUDE_BG_ID=a1b2c3d4
-owned_writable="$(bash "$skill_dir/dispatch.sh" --runner claude --owned --name Review --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
-grep -Fx -- 'ARC_DISPATCH_SESSION={"agent":"claude","session_id":"a1b2c3d4","name":"Review","owned":true}' <<< "$owned_writable" >/dev/null
-unset DISPATCH_TEST_CLAUDE_BG_ID
-
-rm -f -- "$DISPATCH_TEST_CLAUDE_ARGS"
-owned_read_only="$(bash "$skill_dir/dispatch.sh" --runner claude --read-only --owned --name Audit --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/arc-owned-read-only.log")"
-# The worker writes DISPATCH_TEST_CLAUDE_ARGS asynchronously: without this bounded wait,
-# a late write here could still land after a later launch's own check of the same file.
-for _ in $(seq 1 100); do [ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] && break; sleep 0.05; done
-owned_receipt="$(grep '^ARC_DISPATCH_SESSION=' <<< "$owned_read_only")"
-[ "$(grep -c '^ARC_DISPATCH_SESSION=' <<< "$owned_read_only")" -eq 1 ]
-python3 -c 'import json,sys; d=json.loads(sys.argv[1].split("=",1)[1]); assert d["owned"] is True; assert set(d) == {"agent","session_id","name","owned"}' "$owned_receipt"
-
-# --attach opens a real terminal, so this stubs this platform's launcher ahead of the
-# real one on PATH, the same way the Claude and Codex binaries are stubbed above, so the
-# run never opens a real window on the machine running it.
-stub_terminal_launcher
-export DISPATCH_TEST_CLAUDE_BG_ID=a1b2c3d4
-owned_attach_writable="$(PATH="$tmp/term-bin:$PATH" bash "$skill_dir/dispatch.sh" --runner claude --attach --name Review --prompt "$tmp/prompt.md" --cwd "$tmp/work")"
-grep -Fx -- 'ARC_DISPATCH_SESSION={"agent":"claude","session_id":"a1b2c3d4","name":"Review","owned":true}' <<< "$owned_attach_writable" >/dev/null
-unset DISPATCH_TEST_CLAUDE_BG_ID
-
-override_record="$(bash "$skill_dir/dispatch.sh" --runner claude --prompt "$tmp/prompt.md" --cwd "$tmp/work" --permission-mode acceptEdits)"
-override_mode="$(awk '$0 == "--permission-mode" { getline; print; exit }' "$DISPATCH_TEST_CLAUDE_ARGS")"
-[ "$override_mode" = acceptEdits ]
-grep -F -- 'id: claude-test' <<< "$override_record" >/dev/null
-
-export DISPATCH_TEST_QUEUE_LOG="$tmp/queue.log"
-export DISPATCH_TEST_EXPECT_RESULT=""
-record="$(bash "$skill_dir/dispatch.sh" --runner codex --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/run.log" --notify-thread origin-123)"
-wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
-[ "$(wc -l < "$DISPATCH_TEST_QUEUE_LOG")" -eq 1 ]
-grep -F -- '--thread origin-123 --message Fresh-session handoff dispatch-' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
-grep -F -- 'completed (exit 0). Result:' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
-grep -F -- "notify-thread: origin-123" <<< "$record" >/dev/null
-grep -F -- "monitor.log" <<< "$record" >/dev/null
-
-export DISPATCH_TEST_QUEUE_LOG="$tmp/failure-queue.log"
-export DISPATCH_TEST_EXPECT_RESULT=""
-export DISPATCH_TEST_EXEC_STATUS=7
-failure_record="$(bash "$skill_dir/dispatch.sh" --runner codex --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/failure.log" --notify-thread origin-456)"
-wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
-[ "$(wc -l < "$DISPATCH_TEST_QUEUE_LOG")" -eq 1 ]
-grep -F -- 'failed (exit 7). Result:' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
-grep -F -- "notify-thread: origin-456" <<< "$failure_record" >/dev/null
-
-unset DISPATCH_TEST_EXEC_STATUS
-export DISPATCH_NOTIFY_INITIAL_SECONDS=1
-export DISPATCH_NOTIFY_MAX_SECONDS=1
-export DISPATCH_NOTIFY_BLOCKED_GRACE_SECONDS=1
-export DISPATCH_NOTIFY_STARTUP_GRACE_SECONDS=2
-export DISPATCH_NOTIFY_TIMEOUT_SECONDS=5
-export DISPATCH_TEST_EXPECT_RESULT=""
-export DISPATCH_TEST_CLAUDE_STATE_FILE="$tmp/claude-state"
-
-export DISPATCH_TEST_CLAUDE_SEQUENCE=complete
-export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-complete-queue.log"
-claude_record="$(bash "$skill_dir/dispatch.sh" --runner claude --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/claude-complete.log" --notify-thread origin-789)"
-wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
-[ "$(wc -l < "$DISPATCH_TEST_QUEUE_LOG")" -eq 1 ]
-grep -F -- '--thread origin-789 --message Fresh-session handoff dispatch-' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
-grep -F -- 'unverified (exit unknown). Result:' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
-grep -F -- 'notify-thread: origin-789' <<< "$claude_record" >/dev/null
-grep -F -- "monitor.log" <<< "$claude_record" >/dev/null
-grep -F -- 'monitor-pid:' <<< "$claude_record" >/dev/null
-
-rm -f -- "$DISPATCH_TEST_CLAUDE_STATE_FILE"
-export DISPATCH_TEST_CLAUDE_SEQUENCE=blocked
-export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-blocked-queue.log"
-blocked_record="$(bash "$skill_dir/dispatch.sh" --runner claude --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/claude-blocked.log" --notify-thread origin-790)"
-wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
-[ "$(wc -l < "$DISPATCH_TEST_QUEUE_LOG")" -eq 1 ]
-grep -F -- 'attention (exit unknown)' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
-grep -F -- 'notify-thread: origin-790' <<< "$blocked_record" >/dev/null
-
-rm -f -- "$DISPATCH_TEST_CLAUDE_STATE_FILE"
-export DISPATCH_TEST_CLAUDE_SEQUENCE=multi_agent
-export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-multi-agent-queue.log"
-bash "$skill_dir/watch-claude.sh" "$CLAUDE_BIN" "$CODEX_BIN" claude-test multi-agent origin-792 'claude logs claude-test' 'claude attach claude-test'
-assert_single_notice "$DISPATCH_TEST_QUEUE_LOG" 'unverified (exit unknown). Result:'
-
-rm -f -- "$DISPATCH_TEST_CLAUDE_STATE_FILE"
-export DISPATCH_TEST_CLAUDE_SEQUENCE=registry_error
-export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-registry-error-queue.log"
-if bash "$skill_dir/watch-claude.sh" "$CLAUDE_BIN" "$CODEX_BIN" claude-test registry-error origin-793 'claude logs claude-test' 'claude attach claude-test'; then
-  printf 'registry-error watcher unexpectedly succeeded\n' >&2
-  exit 1
-fi
-assert_single_notice "$DISPATCH_TEST_QUEUE_LOG" 'could not be monitored after three Claude registry errors'
-
-rm -f -- "$DISPATCH_TEST_CLAUDE_STATE_FILE"
-export DISPATCH_TEST_CLAUDE_SEQUENCE=unknown
-export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-unknown-queue.log"
-if bash "$skill_dir/watch-claude.sh" "$CLAUDE_BIN" "$CODEX_BIN" claude-test unknown origin-794 'claude logs claude-test' 'claude attach claude-test'; then
-  printf 'unknown-state watcher unexpectedly succeeded\n' >&2
-  exit 1
-fi
-assert_single_notice "$DISPATCH_TEST_QUEUE_LOG" 'reported unknown Claude state surprised'
-
-rm -f -- "$DISPATCH_TEST_CLAUDE_STATE_FILE"
-export DISPATCH_TEST_CLAUDE_SEQUENCE=missing
-export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-missing-queue.log"
-if bash "$skill_dir/watch-claude.sh" "$CLAUDE_BIN" "$CODEX_BIN" claude-test missing origin-795 'claude logs claude-test' 'claude attach claude-test'; then
-  printf 'missing-agent watcher unexpectedly succeeded\n' >&2
-  exit 1
-fi
-assert_single_notice "$DISPATCH_TEST_QUEUE_LOG" 'never appeared in the Claude registry'
-
-rm -f -- "$DISPATCH_TEST_CLAUDE_STATE_FILE"
-export DISPATCH_TEST_CLAUDE_SEQUENCE=working
-export DISPATCH_NOTIFY_STARTUP_GRACE_SECONDS=5
-export DISPATCH_NOTIFY_TIMEOUT_SECONDS=2
-export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-timeout-queue.log"
-if bash "$skill_dir/watch-claude.sh" "$CLAUDE_BIN" "$CODEX_BIN" claude-test timeout origin-796 'claude logs claude-test' 'claude attach claude-test'; then
-  printf 'timeout watcher unexpectedly succeeded\n' >&2
-  exit 1
-fi
-assert_single_notice "$DISPATCH_TEST_QUEUE_LOG" 'monitor timed out after 2 seconds'
-
-export DISPATCH_TEST_QUEUE_LOG="$tmp/claude-read-only-queue.log"
-export DISPATCH_TEST_EXPECT_RESULT=""
-read_only_record="$(bash "$skill_dir/dispatch.sh" --runner claude --read-only --read-tool mcp__tickets__get_ticket --read-tool mcp__tickets__list_comments --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/claude-read-only.log" --notify-thread origin-791)"
-wait_for_queue "$DISPATCH_TEST_QUEUE_LOG"
-[ "$(wc -l < "$DISPATCH_TEST_QUEUE_LOG")" -eq 1 ]
-grep -F -- 'completed (exit 0)' "$DISPATCH_TEST_QUEUE_LOG" >/dev/null
-grep -F -- 'notify-thread: origin-791' <<< "$read_only_record" >/dev/null
-[ "$(grep -c '^ARC_DISPATCH_SESSION=' <<< "$read_only_record")" -eq 1 ] || {
-  printf 'default read-only Claude launch printed no single Arc receipt\n' >&2; exit 1
-}
-default_read_only_session_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1].split("=",1)[1])["session_id"])' "$(grep '^ARC_DISPATCH_SESSION=' <<< "$read_only_record")")"
-[[ "$default_read_only_session_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
-# The tokens that follow one flag, up to the next flag, one per line.
-flag_values() {
-  awk -v flag="$1" '$0 == flag { on = 1; next } on && /^--/ { exit } on { print }' "$DISPATCH_TEST_CLAUDE_ARGS"
-}
-expect_value() {
-  if ! flag_values "$1" | grep -Fx -- "$2" >/dev/null; then
-    printf 'Claude read-only launch is missing %s under %s\n' "$2" "$1" >&2
-    exit 1
-  fi
-}
-reject_value() {
-  if flag_values "$1" | grep -Fx -- "$2" >/dev/null; then
-    printf 'Claude read-only launch carries %s under %s\n' "$2" "$1" >&2
-    exit 1
-  fi
-}
-expect_value --permission-mode dontAsk
-expect_value --permission-prompts none
-for tool in Read Grep Glob mcp__tickets__get_ticket mcp__tickets__list_comments; do expect_value --allowedTools "$tool"; done
-for tool in Bash PowerShell Agent Edit Write; do expect_value --disallowedTools "$tool"; reject_value --allowedTools "$tool"; done
-if grep -Fx -- '--setting-sources' "$DISPATCH_TEST_CLAUDE_ARGS" >/dev/null; then
-  printf 'Claude read-only launch with an MCP read drops the settings that configure its server\n' >&2
-  exit 1
-fi
-
-# With no MCP read, the launch loads no settings and no MCP servers, so no allow rule can
-# approve a write, and a reviewer runs Bash under auto mode with the edit tools and the
-# git commands that change refs or the working tree denied.
-rm -f "$DISPATCH_TEST_CLAUDE_ARGS"
-bash "$skill_dir/dispatch.sh" --runner claude --read-only --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/claude-read-only-plain.log" >/dev/null
-for _ in $(seq 1 100); do [ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] && break; sleep 0.1; done
-[ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] || { printf 'Claude read-only launch never started\n' >&2; exit 1; }
-if [ "$(awk '$0 == "--setting-sources" { getline; print "[" $0 "]"; exit }' "$DISPATCH_TEST_CLAUDE_ARGS")" != "[]" ]; then
-  printf 'Claude read-only launch loads settings whose allow rules can approve a write\n' >&2
-  exit 1
-fi
-grep -Fx -- '--strict-mcp-config' "$DISPATCH_TEST_CLAUDE_ARGS" >/dev/null || { printf 'Claude read-only launch loads MCP servers whose tools auto mode would judge\n' >&2; exit 1; }
-expect_value --permission-mode auto
-reject_value --disallowedTools Bash
-reject_value --allowedTools Bash
-for tool in PowerShell Edit Write NotebookEdit MultiEdit 'Bash(git commit *)' 'Bash(git -C * push *)' 'Bash(git -C * stash)' 'Bash(git stash)' 'Bash(git fetch *)' 'Bash(git branch *)' 'Bash(git worktree remove *)' 'Bash(git * --output*)'; do
-  expect_value --disallowedTools "$tool"
-done
-reject_value --disallowedTools 'Bash(git branch)'
-# dispatch.sh builds its git deny rules from its own copy of dispatch.py's lists, so a verb
-# added to one launcher alone would leave the other launcher's reviewers free to run it.
-python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import dispatch; print(*dispatch.READONLY_GIT_DENY, sep=chr(10))' "$skill_dir" | tr -d '\r' | sort >"$tmp/git-deny-py"
-flag_values --disallowedTools | grep '^Bash(git ' | sort >"$tmp/git-deny-sh"
-if ! diff "$tmp/git-deny-py" "$tmp/git-deny-sh" >&2; then
-  printf 'dispatch.sh and dispatch.py deny different git commands to a read-only Claude session\n' >&2
-  exit 1
-fi
-
-# Claude Code starts a model without auto mode in manual mode, where a session with no
-# permission prompts loses every Bash command it does not classify as read-only. The launch
-# runs such a model in dontAsk, with the same denials, and says why.
-for model_mode in claude-haiku-4-5-20251001:dontAsk claude-opus-4-5-20251101:dontAsk claude-sonnet-4-20250514:dontAsk claude-opus-4-6:auto claude-sonnet-5-5:auto sonnet:auto haiku:auto claude-haiku-5-5:auto 'claude-haiku-5-5[1m]:auto'; do
-  rm -f "$DISPATCH_TEST_CLAUDE_ARGS"
-  bash "$skill_dir/dispatch.sh" --runner claude --read-only --model "${model_mode%%:*}" --prompt "$tmp/prompt.md" --cwd "$tmp/work" --log "$tmp/claude-read-only-model.log" >/dev/null 2>"$tmp/claude-read-only-model.err"
-  for _ in $(seq 1 100); do [ -s "$DISPATCH_TEST_CLAUDE_ARGS" ] && break; sleep 0.1; done
-  expect_value --permission-mode "${model_mode##*:}"
-  expected_model="${model_mode%%:*}"
-  if [ "$expected_model" = haiku ]; then expected_model=claude-haiku-5-5; fi
-  expect_value --model "$expected_model"
-  expect_value --disallowedTools 'Bash(git stash)'
-  reject_value --disallowedTools Bash
-  if [ "${model_mode##*:}" = dontAsk ] && ! grep -F -- "${model_mode%%:*} has no auto mode" "$tmp/claude-read-only-model.err" >/dev/null; then
-    printf 'Claude read-only launch of %s narrowed Bash without saying so\n' "${model_mode%%:*}" >&2
-    exit 1
-  fi
-done
-
-for model in haiku claude-haiku-5-5 claude-haiku-4-5-20251001 sonnet; do
-  bash "$skill_dir/dispatch.sh" --runner claude --model "$model" --prompt "$tmp/prompt.md" --cwd "$tmp/work" >"$tmp/claude-model.out"
-  expected_model="$model"
-  if [ "$expected_model" = haiku ]; then expected_model=claude-haiku-5-5; fi
-  expect_value --model "$expected_model"
-  grep -Fx -- "model: $expected_model" "$tmp/claude-model.out" >/dev/null
-done
-
-if bash "$skill_dir/dispatch.sh" --runner claude --read-only --permission-mode auto --prompt "$tmp/prompt.md" --cwd "$tmp/work" >"$tmp/read-only-override.out" 2>&1; then
-  printf 'Claude read-only permission override unexpectedly succeeded\n' >&2
-  exit 1
-fi
-grep -F -- 'cannot override Claude --read-only' "$tmp/read-only-override.out" >/dev/null
-
-if bash "$skill_dir/dispatch.sh" --runner claude --read-only --read-tool Bash --prompt "$tmp/prompt.md" --cwd "$tmp/work" >"$tmp/read-tool-invalid.out" 2>&1; then
-  printf 'non-MCP read tool unexpectedly succeeded\n' >&2
-  exit 1
-fi
-grep -F -- '--read-tool must name one exact MCP tool' "$tmp/read-tool-invalid.out" >/dev/null
-
-for runner_args in "--runner codex --read-only" "--runner claude"; do
-  # shellcheck disable=SC2086
-  if bash "$skill_dir/dispatch.sh" $runner_args --read-tool mcp__tickets__get_ticket --prompt "$tmp/prompt.md" --cwd "$tmp/work" >"$tmp/read-tool-misplaced.out" 2>&1; then
-    printf -- '--read-tool unexpectedly accepted with %s\n' "$runner_args" >&2
-    exit 1
-  fi
-  grep -F -- '--read-tool requires --runner claude --read-only' "$tmp/read-tool-misplaced.out" >/dev/null
-done
-
-# Two named launches from one prompt file keep separate results.
-for review_name in review-opus5 review-opus55; do
-  bash "$skill_dir/dispatch.sh" --runner claude --read-only --name "$review_name" --prompt "$tmp/prompt.md" --cwd "$tmp/work" >"$tmp/$review_name.out"
-  grep -Fx -- "result: $(cd "$tmp" && pwd)/prompt.$review_name.log" "$tmp/$review_name.out" >/dev/null || {
-    printf 'named launch %s does not keep its own result log\n' "$review_name" >&2
-    exit 1
-  }
-done
-
-printf 'dispatch permission and callback tests passed\n'
+printf 'dispatch launcher tests passed\n'
