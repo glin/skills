@@ -29,6 +29,9 @@ Distilled from how the author rewrites AI-drafted PR bodies:
 - Testing sections state only what was actually run and observed. Never present simulated or hypothetical runs as results. Leave a template checklist box unchecked rather than claiming an unrun step, annotating why (deferred to CI, not applicable).
 - Describe the final logical change, never the iteration journey. When branch history is iteration noise (approaches added then reverted), suggest squashing before opening so description and history match.
 - Cut rationale essays and bold feature-breakdown walls; keep repro steps, file:line references, and real links. Fluff dies, substance stays.
+- For a mechanical reformat, explain its reason in one sentence. Tell reviewers they can skip it only when content and behavior stay the same.
+- Point reviewers to the Decisions section. State how the PR meets the issue's requirements, then name the choices that are open to reviewer judgment.
+- Separate independent examples in a code block with one blank line. Keep each example's comment with its code.
 - Apply the `rewrite` skill's Rewrite mode rules and its Tier 1 banned vocabulary.
 
 ## When to Use
