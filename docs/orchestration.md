@@ -4,7 +4,7 @@ This file records why each rule in the `orchestrate`, `delegate` and `dispatch` 
 
 To add an entry, write one bullet per rule with one to three sentences on the failure it prevents, and no dates, hashes or history.
 
-Reasons for reviewer rules live in the [pre-commit review reason log](../skills/pre-commit-review/README.md).
+Reasons for reviewer rules live in the [review reason log](../skills/review/README.md).
 
 ## Which skill does what
 
@@ -13,9 +13,11 @@ Reasons for reviewer rules live in the [pre-commit review reason log](../skills/
 | One repository task, from brief to a reviewed commit | `orchestrate` |
 | Bounded units whose results return to the current session | `delegate` |
 | A fresh session whose result is a commit or a report | `dispatch` |
-| Read-only reviewers on an immutable commit | `pre-commit-review` |
+| Coordinate isolated reviewers of a change or a plan, and check their reports | `review` |
 | A written plan that spans several sessions | `phased-plan` |
 | The cheapest topology for a large task, before it starts | `preplan` |
+
+`review` coordinates isolated reviewers. Its [selection step](../skills/review/SKILL.md#1-determine-what-to-review-and-load-its-rules) decides which rules a reviewer receives. Project-specific review rules stay with the caller, which owns their names and locations. The public runner stays independent of private project instructions.
 
 ## How a task runs
 
@@ -218,6 +220,8 @@ A delayed Codex snapshot gets one observation after a later model request, using
 
 ## Context and delegation
 
+- Native reviewers save full reports outside the candidate tree and return paths, metadata, and incomplete coverage. Full completion payloads consume coordinator context before triage begins. The coordinator reads each report once and carries only verified findings into later briefs. [Why reviewer reports go to files](#why-reviewer-reports-go-to-files) gives the reasons and costs.
+
 - The coordinator's own context is the largest cost. Re-reading history took most of one measured turn's spend.
 - The coordinator's token limit counts growth above the opening context. The opening context is already large.
 - Request and token limits are checkpoints, not stops. The author approved nearly every such stop, and the ceiling already prices the coordinator.
@@ -232,6 +236,33 @@ A delayed Codex snapshot gets one observation after a later model request, using
 - A harness subagent comes before a dispatched session. Only the subagent reports completion without an explicit return path.
 - Immutable reviews prefer native reporters. Mandatory dispatch added a second return path. Dispatch stays for enforced sandboxes, because a prompt does not enforce read-only access.
 - Each launch selects one completion route. A waited result that is also read by hand gives one review two completions.
+
+## Why reviewer reports go to files
+
+A reviewer saves its full report in the run folder and returns the path. The file does not exist to save the coordinator's context.
+
+- A full read costs the same tokens as an inline report. Triage reads every finding, so the whole report enters the coordinator's context either way. A report saves context only when the coordinator reads less than all of it.
+- A file read can cost more than an inline report. It adds one request at the full context size, unless it rides in a call the coordinator makes anyway. That request costs about 0.03 USD at a 150,000-token context and 0.10 USD at 500,000, which is more than the report's own tokens.
+- A hand-back saves no context either. Claude Code can deliver a background subagent's report as a hand-back message, and the full report still enters the parent's context. The `Agent` tool result then holds a one-line pointer, so the report does not arrive twice.
+
+Reports are small. Across 396 saved reviewer reports, the median was 4,846 bytes, about 1,200 tokens. The 90th percentile was 9,022 bytes, about 2,250 tokens. The largest was 16,691 bytes, about 4,200 tokens. The token figures assume 4 bytes per token. A run with two reviewers and two rounds carries about 5,000 tokens of reports.
+
+The cost of carrying them is small too. The figures in this paragraph are estimates from Opus 5.5 list prices with a 1-hour cache, not measured spend. A cache write costs 8 USD per million tokens, and a cache read costs 0.20 USD per million. 5,000 tokens cost 0.04 USD to write once, then 0.001 USD on every later request. Over 100 to 300 later requests, the total is 0.14 to 0.34 USD. The reports add 2.5% to the input cost of each later request at a 200,000-token context, and 1% at 500,000. For scale, a 27 USD run ceiling is common, and one plan review cost 1.75 USD.
+
+Report files exist for these reasons:
+
+- A file survives compaction, session end, landing and stopping. A report held only in the conversation is gone after any of them.
+- Scripts read files. `quote_check.py` checks quotes in a saved report, and the scripts that blind reports for a model comparison and extract a Claude report from its log also take paths.
+- Later work reuses the reports. Model comparison records, review records, plan-review records and retrospectives read them after the run ends.
+- The coordinator chooses when to read a report and how much of it. An inline report arrives whole, at the moment the reviewer finishes.
+
+## Why triage stays with the coordinator
+
+Triage decides whether each finding is true and in scope. That judgement needs the owner's requirements, the plan and the earlier decisions, and the coordinator already holds all three. Principle 10 states the rule: delegate retrieval down, never judgement.
+
+- A fresh triager costs more than it saves. Its brief must carry the requirements, the plan and the decisions, and that brief is itself context. It must also read the reports, the plan and the cited code. A fresh Opus triager costs an estimated 0.50 to 1 USD per round, and saves an estimated 0.10 to 0.30 USD of coordinator context. Both figures are estimates, not measurements.
+- A fresh triager pays off only for a large review. Reports over about 10,000 tokens each, or many reviewers, change the balance.
+- A grep does not replace the triage read. Every finding needs a judgement, and a pattern match makes none. The only safe skip is a report that approves with no findings, and that skip saves almost nothing.
 
 ## Models and providers
 
@@ -250,7 +281,7 @@ A delayed Codex snapshot gets one observation after a later model request, using
 - Every flag carries a one-line description. From names alone, a coordinator confused `--read-only` with `--full-access`, and `--attach` with `--wait`.
 - A writable wait (`--wait-launch` or legacy `--wait`) prints the capped result text. Reading the result file costs another round trip.
 - A read-only wait prints its result path, not the report text. A coordinator read a reviewer's report in its launch log before blinding, so the judge of that review was not blind. Read-only marks a review because every review launch is read-only. A read-only analysis that wants the text pays one more read.
-- Both wait routes pass a worker exit code from 1 to 255 through. Arc's outcome alone gave every failed worker exit 1, so a caller could not branch on the worker's own code. The status read repeats up to 40 times, a quarter second apart, because Arc publishes the outcome before it saves the exit code. A worker exit 2 shares its code with the launcher's own failures, so the `worker exit:` line tells them apart.
+- Both wait routes pass a worker exit code from 1 to 255 through. Arc's outcome alone gave every failed worker exit 1, so a caller had no way to branch on the worker's own code. The status read repeats up to 40 times, a quarter second apart, because Arc publishes the outcome before it saves the exit code. A worker exit 2 shares its code with the launcher's own failures, so the `worker exit:` line tells them apart.
 - A waited launch that did not succeed prints Arc's observation reason on stderr. On Linux, a Codex launch with a missing binary printed a normal record with outcome `failed` and no cause.
 - Each wait command stops after 25 hours without an outcome. Arc's supervisor publishes one within 24 hours of its start, and a supervisor that stopped without publishing left the wait running with no bound. `DISPATCH_WAIT_LIMIT_SECONDS` replaces the bound, so a test reaches it without waiting.
 - A waited report without inline text prints its path and size, not a cause. Arc drops the text above its character cap and also above its JSON byte limit.
@@ -282,7 +313,7 @@ A delayed Codex snapshot gets one observation after a later model request, using
 - `--arc-dispatch` goes in the parent Bash command. Arc reads only that command's output, and the wrapper's filename can change.
 - A detached read-only print run chooses its session ID before launch. The launcher returns before Claude writes its JSON.
 - `--owned` marks only a session the author requested. An owned consultation appeared under Today, and no later receipt retracts ownership.
-- The launchers print Arc's `ARC_DISPATCH_SESSION=` marker unchanged and parse no native receipt. Arc reads the native background line, and a second parser could disagree with Arc's.
+- The launchers print Arc's `ARC_DISPATCH_SESSION=` marker unchanged and parse no native receipt. Arc reads the native background line, and a second parser risks disagreeing with Arc's.
 - The marker prints after a failed `arc dispatch wait` or `arc dispatch result`. The worker still runs, and without the marker the caller loses its link.
 - Waited output frames receipt-shaped worker lines. Worker prose otherwise creates a false launch link.
 - Windows Arc dispatch runs the JavaScript entry through Node. Batch wrappers mangle command characters and environment variables.
@@ -311,4 +342,18 @@ A delayed Codex snapshot gets one observation after a later model request, using
 
 - [Claude Code model configuration](https://code.claude.com/docs/en/model-config) owns the provider alias defaults.
 - [Claude Code permission modes](https://code.claude.com/docs/en/permission-modes) owns the model and CLI requirements for auto mode.
+
+## Comparison recording
+
+Orchestrate can select a comparison recorder from owner or repository instructions.
+The public workflow defines the input contract. The caller owns the recorder's identity and durable destination.
+Two verified reviewer configurations on one candidate qualify.
+Repeated configurations, separate rounds, and different implementation roles do not qualify.
+Review retains the caller's inputs until publication succeeds.
+Recording uses the existing reviews and never changes the selected criteria or launches more workers.
+Unkeyed observations preserve findings and limitations without declaring accuracy or a model winner.
+Capture before launch prevents later instruction edits from changing the recorded review conditions.
+Immutable evidence generations preserve earlier reports while a resumed run adds rounds and corrections.
+Arc's root window and matching parent summary avoid attributing coordinator or child costs to a reviewer.
+Run-scoped refs keep replaced candidates available after automatic worktree and branch cleanup.
 
