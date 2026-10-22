@@ -24,7 +24,7 @@ Read [../references/owner-brief.md](../references/owner-brief.md) before prepari
 
 - Simple questions with one clear answer (just answer them)
 - Tasks that require shared state or sequential reasoning across agents
-- Code review of changes (use `pre-commit-review` instead)
+- Code review of changes (use `review` instead)
 
 ## Procedure
 
@@ -46,7 +46,7 @@ Read [../references/model-providers.md](../references/model-providers.md) before
 
 The author may specify models in the argument. Parse the argument to identify requested models:
 
-The shorthands, and how to pass a model to `runSubagent`, are in [../references/models.md](../references/models.md). Read it rather than assuming a version; `pre-commit-review` shares that file, so neither skill carries its own copy.
+The shorthands, and how to pass a model to `runSubagent`, are in [../references/models.md](../references/models.md). Read it rather than assuming a version; `review` shares that file, so neither skill carries its own copy.
 
 If multiple models are specified, run one subagent per model **in parallel** in a single tool-call block.
 

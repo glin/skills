@@ -1,5 +1,7 @@
 # Review record
 
+New records use `source: review`. Readers also accept the historical `source: pre-commit-review` value. Keep historical records unchanged.
+
 An author can opt in by saying "save the review record" or "keep a machine-readable review record". Record only an immutable candidate commit. Without an explicit file path, save the schema-2 JSON in the reviewed repository's `.claude/review-records/` directory. An explicit file path overrides that directory. Use `YYYY-MM-DD-<project>-<first eight candidate SHA characters>-<UTC HHMMSS>-<16 random lowercase hex digits>.json` for either location. The record has one round per reviewed commit and one entry per finding. A review of uncommitted changes writes no record and reports that result. Without opt-in, write no record.
 
 Keep the run folder outside the reviewed worktree. Save every reviewer prompt and report there. The record writer checks the report's final call against the triage, so keep the reports until it succeeds. A caller can retain the run folder longer when it needs the raw review evidence.
@@ -16,7 +18,7 @@ Keep the run folder outside the reviewed worktree. Save every reviewer prompt an
   round-2/ ...
 ```
 
-`run.json` names the first reviewed commit. Use the repository's absolute path. Reserve a UTC run id before launching reviewers, and keep it for every round. Set `landed` to a full commit SHA only after the change lands. Use `null` otherwise. When saving the first reviewer prompt, capture the source skill's full commit SHA as `skill_version`. For a source checkout, use `git -C "$SKILL_DIR" log -1 --format=%H -- SKILL.md`. For a copied installation without Git history, supply its source commit SHA explicitly. The writer discovers the version from a source checkout only when `skill_version` is absent. The writer computes the prompt hash from the saved prompt.
+`run.json` names the first reviewed commit. Use the repository's absolute path. Reserve a UTC run id before launching reviewers, and keep it for every round. Set `landed` to a full commit SHA only after the change lands. Use `null` otherwise. When saving the first reviewer prompt, capture the source skill's full commit SHA as `skill_version`. For a source checkout, use `git -C "$SKILL_DIR" log -1 --format=%H -- SKILL.md rules`. For a copied installation without Git history, supply its source commit SHA explicitly. The writer discovers the version from a source checkout only when `skill_version` is absent. The writer computes the prompt hash from the saved prompt.
 
 The published record's `repository` field depends on the destination. A default record uses a path relative to the record's parent directory, such as `../..`, which resolves to the reviewed repository after the directory moves with it. A record written through `--out` keeps the absolute repository path for an external ledger.
 

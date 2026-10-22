@@ -212,8 +212,30 @@ class WriteRecordTest(unittest.TestCase):
         save(self.run_dir / "run.json", self.meta)
         result = self.write_record()
         self.assertEqual(result.returncode, 0, result.stderr)
-        expected = git(SCRIPT.parent.parent, "log", "-1", "--format=%H", "--", "SKILL.md")
+        expected = git(SCRIPT.parent.parent, "log", "-1", "--format=%H", "--", "SKILL.md", "rules")
         self.assertEqual(json.loads(self.out.read_text(encoding="utf-8"))["skill_version"], expected)
+
+    def test_discovered_version_covers_rule_file_edits(self) -> None:
+        skill = Path(self.temp.name) / "source" / "review"
+        (skill / "scripts").mkdir(parents=True)
+        (skill / "rules").mkdir()
+        git(skill.parent, "init", "-q")
+        git(skill.parent, "config", "user.name", "Test")
+        git(skill.parent, "config", "user.email", "test@example.com")
+        (skill / "SKILL.md").write_text("runner\n", encoding="utf-8")
+        shutil.copyfile(SCRIPT, skill / "scripts" / "write_record.py")
+        git(skill.parent, "add", ".")
+        git(skill.parent, "commit", "-q", "-m", "runner")
+        (skill / "rules" / "code.md").write_text("rules\n", encoding="utf-8")
+        git(skill.parent, "add", ".")
+        git(skill.parent, "commit", "-q", "-m", "rules")
+        rules_commit = git(skill.parent, "rev-parse", "HEAD")
+        self.meta.pop("skill_version")
+        save(self.run_dir / "run.json", self.meta)
+        result = subprocess.run([sys.executable, str(skill / "scripts" / "write_record.py"), str(self.run_dir),
+                                 "--out", str(self.out)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.out.read_text(encoding="utf-8"))["skill_version"], rules_commit)
 
     @unittest.skipUnless(os.name == "nt", "Git Bash drive paths need Windows Python")
     def test_git_bash_paths_for_repository_run_and_output(self) -> None:

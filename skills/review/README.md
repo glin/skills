@@ -1,14 +1,36 @@
-# Pre-commit review reasons
+# Review reasons
 
 Successful opted-in record publication precedes input retirement, and failed publication preserves retry inputs. A disposition inventory accounts for small ignored logs and named readers without treating unresolved findings as active terminal logs. Ordinary reviews retain their existing record opt-in.
 
-[SKILL.md](SKILL.md) holds the review rules. This file gives the failure each rule prevents.
+[SKILL.md](SKILL.md) holds the runner rules. `rules/code.md` and `rules/plan.md` hold the rule sets. This file gives the failure each rule prevents.
 
 Before you change a review rule, read its entry here. Add the new reason in the same commit. Write it as one to three sentences on the failure the rule prevents, with no dates, hashes or history.
 
+## Runner and rule sets
+
+The method of review changes more often than the launch, the quote check and the triage. With the code checklist embedded in the runner, a plan review needed its own copy of the launch and triage, and the two copies drifted.
+
+A rule set is a file inside this skill, not a separate skill. Every installed skill adds its description to every session's prompt, and a rule set cannot run without the runner.
+
+The runner loads one built-in rule file, as the [selection step](SKILL.md#1-determine-what-to-review-and-load-its-rules) describes. A code review never reads the plan rules, so the unused rule set costs no context.
+
+A caller's rules source joins the built-in sources through the same ordered selector. A project with its own review rules otherwise had to copy the runner or edit a public file to reach them. Callers plug in existing review methods, including whole review skills, without rewriting them into a fixed format. An explicit marker removes the ambiguity between a plan under review and a rules file.
+
+Runner-owned rules outrank every rule source. A rules source that turned off report-only or the exact-quote evidence would break the quote check and the candidate tree. A missing rules source stops the review, because a silent fallback runs the built-in rules and reports them as the caller's.
+
+The prompt names every loaded source, so a report shows which rules it applied.
+
+The skill keeps the name `review`, because coordinators invoke it by name. A rename breaks every caller at once.
+
+The plan rule set lives in this public skill because the runner selects it. A public runner that selected a private rule file would fail in every other installation.
+
+Naming private rules in the public runner ties unrelated repositories to unavailable instructions, so callers own project-specific rule names and locations and pass the path at each call.
+
+A security, design or UI rule set arrives only when a real review needs it. A rule set written ahead of its first review has no failure to name, so nothing tests its checks.
+
 ## Scope and coverage
 
-Isolated reviewers keep full reports out of the implementation context, which still needs that space.
+Saved reports keep full reviewer responses out of native completion messages. Triaging a report still adds its text to the coordinator's context, so later briefs carry only verified findings. See [Why reviewer reports go to files](../../docs/orchestration.md#why-reviewer-reports-go-to-files) and [Why triage stays with the coordinator](../../docs/orchestration.md#why-triage-stays-with-the-coordinator).
 
 Generated files repeat a source change, so reviewing them spends budget on copies. A defect in unchanged code is out of scope, because it must not block a change that did not cause it.
 
@@ -34,13 +56,15 @@ The quote check runs before the author sees any finding, so an unsupported citat
 
 ## Reviewers and models
 
-Each extra premium reviewer costs money, so the default is one reviewer on the current model.
+Each extra premium reviewer costs money, so a code review defaults to one reviewer on the current model. A plan review defaults to two reviewers from different model families, because its rule set names that pair.
 
 Duplicate model tables drifted to conflicting versions inside one skill, so [models.md](../references/models.md) holds the only table. Shared provider rules keep each workflow from drifting to its own policy.
 
 Runners use different default efforts. Identical prompt bytes, separate result destinations and recorded effort keep a model comparison from mixing prompt and launch differences.
 
 ## Transport and completion
+
+A native reviewer writes only its assigned report outside the candidate tree. Pointer returns avoid repeated full report payloads without granting candidate edits. Separate destination metadata preserves identical comparison prompts. A comparison uses dispatch when native transport cannot separate that destination from its prompt.
 
 Forced dispatch added a second completion route where the native route already worked. A report-only role in a prompt does not enforce read-only file access, so a task that needs a sandbox still dispatches. See [Context and delegation](../../docs/orchestration.md#context-and-delegation).
 
@@ -52,11 +76,11 @@ A focused re-review reads the fix delta first, so the smaller budget goes to the
 
 Without owner messages and corrections in the brief, a fresh worker acts on stale instructions. See the [owner brief contract](../references/owner-brief.md).
 
-After the findings settle, the raw report is a duplicate nobody reads, so cleanup deletes it. The artifacts stay when recording or delivery fails, so a retry still has its evidence.
+After the findings settle, a code review's raw report is a duplicate nobody reads, so cleanup deletes it. A plan review keeps its reports beside the plan, because a later audit reads them with the plan entry. The artifacts stay when recording or delivery fails, so a retry still has its evidence.
 
-A review request is not a request for a lasting file, so a record needs explicit opt-in. A record needs a stable target, so only an immutable candidate gets one.
+A code review request is not a request for a lasting file, so a review record needs explicit opt-in. A plan review always writes its plan entry, because the audit of plan reviews decides from every entry. A record needs a stable target, so only an immutable candidate gets one.
 
-The coordinator captures the skill version with the first prompt, so a later skill edit cannot change the recorded version.
+The coordinator captures the skill version, the last commit that touched `SKILL.md` or `rules/`, with the first prompt. A rule-file edit changes what a reviewer reads, so it counts as a new version. Capturing it first means a later skill edit cannot change the recorded version.
 
 Shell serializers can publish call objects that the final recorder then rejects, so the shared writer validates triage before it replaces the file. The explicit shared root keeps copied installations working without a second writer.
 
@@ -69,3 +93,12 @@ If every known gap counts as an exclusion, an implementer can remove unfinished 
 A belief in a plan does not authorize an exclusion, and an exclusion does not make a belief true. The template heading "Known gaps and authorized exclusions" keeps the two apart.
 
 A change to the coordinator alone leaves the reviewer template with a conflicting instruction, so it shares the rule with [orchestrate](../orchestrate/SKILL.md). The invitation to report other cases stops one exclusion from closing the whole area.
+## Caller-owned comparison evidence
+
+A caller can retain prompts, rules, reports, and triage for its selected comparison recorder.
+This request does not enable the runner's separate review record.
+The caller publishes its record before releasing the retained evidence.
+Recording errors leave the inputs available for retry.
+This boundary prevents ordinary cleanup from deleting reports that a comparison still needs.
+Successful publication of the runner's separate review record cannot release inputs that the caller's recorder still needs.
+Citation failures and refuted claims remain separate because an incorrect location can describe a real defect.

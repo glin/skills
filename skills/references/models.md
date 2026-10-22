@@ -1,28 +1,24 @@
 # Model shorthands
 
-The single source for the model shorthands used by `consult`, `pre-commit-review`, `delegate` and `dispatch`. Each skill points here rather than carrying a copy, because two copies means two places to update and one that gets forgotten.
+The single source for the model shorthands used by `consult`, `review`, `delegate` and `dispatch`. Each skill points here rather than carrying a copy, because two copies means two places to update and one that gets forgotten.
 
 ## Shorthands
 
 | Shorthand | Model |
 |-----------|-------|
-| (none/blank) | `pre-commit-review`: one reviewer on the current model. `consult`: Claude Opus 5.5 + Claude Sonnet 5.5 in parallel. |
+| (none/blank) | `review`: the rule set's default reviewers, or one reviewer on the current model when it names none. `consult`: the current model, run twice in parallel. |
 | `opus` | Claude Opus 5.5 |
 | `sonnet` | Claude Sonnet 5.5 |
 | `fable` | Claude Fable 5.1 |
 | `haiku` | Claude Haiku 5.5 |
 | `sol` | GPT-6.1 Sol |
-| `sol6` | GPT-6 Sol |
 | `terra` | GPT-5.6 Terra |
 | `astra` | GPT-6 Astra |
 | `luna` | GPT-6 Luna |
-| `luna6` | GPT-6 Luna |
-| `codex` | GPT-5.3 Codex |
 | `gemini` | Gemini 3.1 Pro |
 | `flash` | Gemini 3.5 Flash |
-| `all` | opus + sonnet + sol + gemini in parallel |
 
-`haiku` selects `claude-haiku-5-5`. Pass this explicit ID to Claude native children. `dispatch.py` and `arc run` expand the shorthand. `sonnet` passes through to the Claude CLI's own alias, and an explicit `claude-sonnet-5` ID still selects Sonnet 5. `sol` selects `gpt-6.1-sol`. `sol6` selects `gpt-6-sol`. `luna` and `luna6` select `gpt-6-luna`. `astra` selects `gpt-6-astra`. `terra` selects `gpt-5.6-terra`. GPT-6 Luna serves small reviews that do not need a deep review.
+`haiku` selects `claude-haiku-5-5`. Pass this explicit ID to Claude native children. `dispatch.py` and `arc run` expand the shorthand. `sonnet` passes through to the Claude CLI's own alias, and an explicit `claude-sonnet-5` ID still selects Sonnet 5. `sol` selects `gpt-6.1-sol`. `luna` selects `gpt-6-luna`. `astra` selects `gpt-6-astra`. `terra` selects `gpt-5.6-terra`. GPT-6 Luna serves small reviews that do not need a deep review.
 
 Explicit IDs retain their version. [model-providers.md](model-providers.md) owns provider-qualified IDs, availability checks, native inheritance, and dispatch selection.
 

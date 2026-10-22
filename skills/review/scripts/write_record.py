@@ -188,7 +188,7 @@ def build(run_dir: Path, out: Path | None) -> tuple[dict, Path]:
     if skill_version is None:
         skill_dir = Path(__file__).resolve().parent.parent
         try:
-            skill_version = git(skill_dir, "log", "-1", "--format=%H", "--", "SKILL.md")
+            skill_version = git(skill_dir, "log", "-1", "--format=%H", "--", "SKILL.md", "rules")
         except subprocess.CalledProcessError as error:
             raise ValueError("skill_version needs the source skill's full commit SHA") from error
         if not skill_version:
@@ -196,7 +196,7 @@ def build(run_dir: Path, out: Path | None) -> tuple[dict, Path]:
     if not isinstance(skill_version, str) or not FULL_SHA.fullmatch(skill_version):
         raise ValueError("skill_version must be the source skill's full commit SHA")
     record = {"schema": 2, "date": meta["date"], "run_id": meta["run_id"], "skill_version": skill_version,
-            "project": meta["project"], "repository": repository_in_record, "source": "pre-commit-review",
+            "project": meta["project"], "repository": repository_in_record, "source": "review",
             "plan": meta.get("plan"), "base": base, "candidate": candidate, "landed": meta.get("landed"),
             "prompt_sha256": prompt_hash, "judge": meta["judge"], "rounds": rounds}
     validate_record(record)
@@ -204,8 +204,8 @@ def build(run_dir: Path, out: Path | None) -> tuple[dict, Path]:
 
 
 def validate_record(record: dict) -> None:
-    if record["schema"] != 2 or record["source"] != "pre-commit-review":
-        raise ValueError("record needs schema 2 and a pre-commit-review source")
+    if record["schema"] != 2 or record["source"] not in {"review", "pre-commit-review"}:
+        raise ValueError("record needs schema 2 and a review or historical pre-commit-review source")
     if (not DATE.fullmatch(record["date"]) or not PROJECT.fullmatch(record["project"]) or
             not RUN_ID.fullmatch(record["run_id"]) or not text_value(record["repository"]) or
             not FULL_SHA.fullmatch(record["skill_version"])):
