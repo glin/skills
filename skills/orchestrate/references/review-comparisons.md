@@ -73,6 +73,13 @@ Do not copy a coordinator transcript that includes unrelated tasks.
           "outcome": "completed",
           "report_path": "round-1/reports/A.md",
           "report_sha256": "<hash of saved report bytes>",
+          "report_delivery": {
+            "selected": "file",
+            "actual": "file",
+            "capture": "reviewer-file",
+            "failure": null
+          },
+          "delivery_evidence": [],
           "transcript_path": null,
           "cost_path": null,
           "review_window": null,
@@ -108,6 +115,7 @@ Each `launch_path` names saved launch metadata in this form:
   "prompt_path": "round-1/prompt.md",
   "prompt_sha256": "<hash of exact launched prompt bytes>",
   "report_destination": "round-1/reports/A.md",
+  "report_delivery": { "selected": "file" },
   "requested": {
     "model": "<requested model id, or unknown>",
     "effort": "high",
@@ -121,16 +129,24 @@ Capture requested values before launch. Capture established values from supporte
 Keep unavailable values `unknown`. A submission without execution evidence keeps `executed: false`.
 The reviewer entry matches its saved launch metadata. Retain raw launch receipts in the saved transcript when available.
 Completed reviews require executed launch evidence and a nonempty report.
-Capture `report_sha256` when the report arrives. Keep it null when no report exists.
+Capture `report_sha256` from the canonical report when it is saved. Keep it null when no report exists. A retry reuses that report and hash.
+Capture `report_delivery.selected` in launch metadata before launch.
+When the report is saved or found missing, copy `selected` into the reviewer entry and add `actual`, `capture`, and `failure`.
+The review skill's [run record](../../review/references/run-record.md#report-delivery) defines these values.
+`delivery_evidence` lists saved partial reports and delivery errors. An older entry without delivery fields reads as unknown.
 The saved report path matches the destination assigned at launch.
 Launch metadata binds the exact shared or reviewer-specific prompt path and hash.
 Transport is `native`, `dispatch`, or `unknown`.
 Missing transcripts, costs, runtime, and review windows remain null.
 Runtime uses elapsed whole seconds when saved timestamps establish it.
-If a native prompt embeds a destination, save that reviewer's exact prompt separately.
+A text-output prompt names no destination. The coordinator maps each completion to its assigned destination.
+If a native file-output prompt embeds a destination, save that reviewer's exact prompt separately.
 Add both `prompt_path` and `prompt_sha256` to its reviewer entry.
 Otherwise the reviewer uses the round prompt bytes.
-Neither case turns an ordinary review into a controlled experiment.
+Identical prompt bytes and matching delivery modes remove two differences between reviewers.
+Neither turns an ordinary review into a controlled experiment.
+Record a text recovery, mixed delivery modes, and transcribed reports as comparison limitations.
+A transcribed report's hash and quote check cover the saved copy, not the reviewer's original completion.
 
 `provenance_path` names the frozen skill provenance, not a later live skill lookup.
 The provenance contains the fields specified in the orchestrate Brief.
@@ -209,7 +225,7 @@ Never substitute runner dollars for Arc estimates or describe estimates as invoi
 Invoke the resolved recorder with the existing run folder. Do not launch a new review.
 Call it once per close event, including eligible stopped and failed runs.
 Unkeyed observations cannot establish misses, recall rates, or a winner.
-Record configuration differences and coverage gaps as limitations.
+Record configuration differences, delivery limitations, and coverage gaps as limitations.
 Save the durable output path after publication succeeds.
 Keep retry inputs when publication fails.
 Cleanup follows artifact-closure only after every required recorder succeeds.

@@ -25,11 +25,11 @@ Dispatched review requires an immutable target. When uncommitted changes lack a 
 
 Write one self-contained prompt file. Name the plan, repository instructions, base and candidate SHAs, change summary, changed files, known gaps, completed checks, rule sources, and allowed repository roots. Leave out each field whose template section the rule file omits. Forbid reads outside those roots. Keep the prompt and raw reports outside the candidate worktree.
 
-Assign each reviewer a unique report destination outside the candidate worktree. Native reviewers write their full report there and return only its path, available session metadata, and incomplete coverage. Permit that report write, never candidate edits. When native transport cannot write the assigned report, use dispatched review for an immutable candidate. Report the unavailable route for uncommitted changes instead of dispatching against a moving tree.
+Assign each reviewer a unique report destination outside the candidate worktree, named by its stable label, such as `reports/A.md`. That destination holds the canonical report on every route. A native reviewer delivers its report through the output mode that [Report delivery](#report-delivery) selects before launch. Permit only the assigned report write under file output, never candidate edits.
 
-Reuse the exact prompt bytes for every model in a controlled comparison. Give each launch its destination through transport metadata. If native transport lacks a separate destination field, use dispatched review for that comparison. For ordinary native review, the prompt can name the destination. Record the harness or runner, model, provider, effort, and chosen completion route. Preserve requested effort in native parameters or dispatched `--effort`. Use high when no effort is specified.
+Reuse the exact prompt bytes for every model in a controlled comparison. A text-output prompt names no destination, because the coordinator maps each completion to its assigned destination. For file output, give each launch its destination through transport metadata. If native transport lacks a separate destination field, use dispatched review for a file-output comparison. For ordinary native review, a file-output prompt can name the destination. Record the harness or runner, model, provider, effort, and chosen completion route. Preserve requested effort in native parameters or dispatched `--effort`. Use high when no effort is specified.
 
-Select one completion route before each launch. A native reviewer returns through harness completion only. It must not launch a detached worker or independently repeat completion handling. Accept its returned path only when it resolves to the assigned destination and contains a nonempty report. A missing report is incomplete review evidence. If completion unexpectedly includes the full report, save it verbatim and note the return-contract deviation. For dispatched review, follow [../dispatch/SKILL.md](../dispatch/SKILL.md) for its completion routes. Launch in the foreground with `--read-only --arc-dispatch --log PATH` and explicit model and effort. For waited completion, run the printed observation command for your shell separately in the background with `--wait-launch LAUNCH_ID --read-only`. Keep the same launch ID when accepted identity remains pending or an observation deadline expires. Keep each launch ID and result path available for recovery. Never poll a reviewer from model turns. Once complete, process each report through its selected route and carry forward only verified findings.
+Select one completion route before each launch. A native reviewer returns through harness completion only. It must not launch a detached worker or independently repeat completion handling. Save its report under [Report delivery](#report-delivery). For dispatched review, follow [../dispatch/SKILL.md](../dispatch/SKILL.md) for its completion routes. Launch in the foreground with `--read-only --arc-dispatch --log PATH` and explicit model and effort. For waited completion, run the printed observation command for your shell separately in the background with `--wait-launch LAUNCH_ID --read-only`. Keep the same launch ID when accepted identity remains pending or an observation deadline expires. Keep each launch ID and result path available for recovery. Never poll a reviewer from model turns. Once complete, process each report through its selected route and carry forward only verified findings.
 
 `$SKILLS_DIR` is the harness-reported skill directory with its last component removed as text, before filesystem traversal. Never obtain it through filesystem `..`. Read `references/session-naming.md` in `$SKILLS_DIR` once per invocation. Choose each reviewer's launch name before launch. Apply the convention to dispatched and native reviews, including plan reviews.
 
@@ -37,9 +37,31 @@ Keep the calling workflow's reviewer count and round limits. Without caller limi
 
 For that re-review, give the reviewer the accepted findings with their exact quotes and the fix delta. Use `git diff <candidate> <replacement>` when the base did not move. Use `git range-diff <base>..<candidate> <target>..<replacement>` when the target moved. Ask the reviewer to read the delta first, then the code that uses the changed lines. Keep the full change available for context, and give this reviewer half the first round's tool-call budget.
 
-Reviewers report findings and never change candidate files. Their prompts forbid fixes, commits, and launching subagents. Only the assigned native report write is permitted. The implementation session verifies findings and batches accepted corrections. If a dispatched reviewer has no usable result after one hour, report its state and ask whether to continue, stop, or replace it.
+Reviewers report findings and never change candidate files. Their prompts forbid fixes, commits, and launching subagents. Only the assigned report write under file output is permitted. The implementation session verifies findings and batches accepted corrections. If a dispatched reviewer has no usable result after one hour, report its state and ask whether to continue, stop, or replace it.
 
 Record an immutable-candidate review only when the author asks to save a review record. A request such as "save the review record" or "keep a machine-readable review record" opts in without a path. Save it under the reviewed repository's `.claude/review-records/` when the author gives no path. An explicit file path overrides that directory. Without an opt-in request, follow the existing review and cleanup steps without a record. For uncommitted changes, write no record even when the author asks, and state that in the result. Follow [references/run-record.md](references/run-record.md) when recording.
+
+### Report delivery
+
+Select one output mode for each native reviewer before launch. A dispatched reviewer always returns text, and dispatch saves it, so record its delivery as selected `text`, actual `text`, capture `exported-text`.
+
+- **File output** is the default. The reviewer writes its full report to the assigned destination and returns only that path, available session metadata, and incomplete coverage.
+- **Text output** applies when a known harness restriction or a saved delivery failure prevents file output. The reviewer writes no files and returns its complete report as the final answer.
+
+A harness can reject a subagent's report write by its file name alone. A stable label such as `A.md` avoids known name rules, but it does not prove that the write works. When a write is denied or the write tool is unavailable, save the failure in `report-delivery.json` in the run directory, as [references/run-record.md](references/run-record.md#report-delivery) shows. Read that file before every launch, including after continuation. Select text output for every launch that matches a saved failure's harness and version, route, and destination pattern. A new harness version gets file output again. This memory lasts as long as the run directory. A caller that keeps one run directory through continuation keeps it, and a new standalone review starts without it. Never retry a denied write under another file name, with another write tool, or with changed permissions.
+
+Save one canonical report per completion at the assigned destination before the quote check and triage:
+
+1. **A written report under file output.** Accept the returned path only when it resolves to the assigned destination and holds a nonempty report.
+2. **A complete report returned as text.** Move any partial file at the destination to a sibling evidence path, such as `reports/A.partial.md`. Save the returned write error, if any, to `reports/A.delivery-error.txt`. Save only the report, without the error lines, at the destination. Under file output, record the failure as `report-write-denied` or `report-write-unavailable` from the error, or `unexpected-text` when the completion names no error.
+3. **A file written under text output.** This breaks the reviewer contract, so record `output-contract-violation`. Confirm that the write changed no candidate file. Then use the written file as the canonical report, copied unchanged to the destination when it sits elsewhere. Save any returned report text beside it as evidence. When that text is a second complete report that differs from the file, the ambiguity rule below applies instead.
+4. **A missing, empty, or truncated report.** This is incomplete review evidence and never a clean approval. A report is truncated when it lacks the ending its rule set requires, such as a code review's final call on its own last line. Move a truncated file to the sibling evidence path, and leave the destination empty. A denied source read also leaves the review incomplete.
+
+A rejected report write does not invalidate a complete returned review. Save returned text through a mechanical export only when the harness provides one, and record capture `exported-text`. Otherwise the coordinator writes the copy and records capture `transcribed-text`. A hash identifies the saved copy. It never proves that the copy matches the reviewer's original completion.
+
+Keep each completion's source reference, such as its session or agent id. When one completion yields two complete reports that differ, the review stays ambiguous until the calling workflow, or else the author, chooses the canonical one. Once the quote check or triage starts, the canonical report and its hash are fixed. A retry, a continuation, or a later recording reuses that file. Never transcribe it again or replace it.
+
+Record each reviewer's `report_delivery` as [references/run-record.md](references/run-record.md#report-delivery) defines it. Finish it before triage binds the key file.
 
 ## When to Use
 
@@ -97,7 +119,23 @@ When the caller requires comparison input retention, capture its saved prompt, r
 Use [../orchestrate/references/review-comparisons.md](../orchestrate/references/review-comparisons.md) for the shared input contract.
 Save execution metadata and the exact report hash when the reviewer returns.
 
-Fill `{REPORT_OUTPUT_CONTRACT}` with the selected route and its permitted output. An ordinary native prompt includes its assigned report path. A controlled prompt refers to the destination supplied through transport metadata. A dispatched prompt requests the full review as the final answer.
+Fill `{REPORT_OUTPUT_CONTRACT}` with the text for the selected route. For native file output, use this text. An ordinary prompt names the assigned path. A controlled prompt names the destination supplied through transport metadata instead.
+
+```text
+Write your full report to {ASSIGNED_DESTINATION}. Write no other file.
+Return only that path, available session metadata, and any incomplete coverage.
+If the report write fails, do not retry it under another name, with another tool, or with other permissions.
+Return the write error first, then your complete report, as your final answer.
+```
+
+For native text output, use this text:
+
+```text
+Write no files. Return your complete report as the final answer.
+Keep the selected rules' report format, including its final line.
+```
+
+For dispatched review, request the complete report as the final answer. The runner saves it outside the candidate worktree.
 
 For native transport, use the active harness's reviewer tool, such as `runSubagent` or Codex `spawn_agent`. Choose an isolated context with no implementation history. For Codex, use `fork_turns: "none"`. Preserve requested model and effort under the provider rules. Never attach overrides to a full-history fork. Supply these fields through the tool's supported parameters:
 
@@ -172,8 +210,6 @@ Every finding names the location it cites and the exact text it rests on at that
 ## Report destination and completion
 
 {REPORT_OUTPUT_CONTRACT}
-
-For native review, write only the assigned report and return its path, available session metadata, and incomplete coverage. For dispatched review, return the report as your final answer. The runner saves it outside the candidate worktree.
 ```
 
 ### 4. Verify Findings Before Acting
@@ -182,13 +218,13 @@ Run this as soon as a report arrives, before any finding is presented to the aut
 
 *Does the cited text exist where the finding says?* Run `quote_check.py` against the report, with `--root` set to a checkout at the reviewed state: the commit itself for an immutable candidate, or the working tree as it stood before any fix began for an uncommitted review. `$SKILL_DIR` is the directory that holds this SKILL.md. The harness gives that location when it loads the skill. Never search the filesystem for it.
 
-A dispatched review writes its report to a file outside the repository. Point `--report` at that file:
+Every route saves its canonical report to a file outside the repository. Point `--report` at that file:
 
 ```bash
 python3 "$SKILL_DIR/scripts/quote_check.py" --root <reviewed tree> --report <report file>
 ```
 
-Native and dispatched review use the saved report with the same `--report` command. Do not copy report text into a shell command.
+Do not copy report text into a shell command.
 
 Read every finding's verdict from the JSON output, whatever the exit code, except exit 2 or exit 3. Exit code 0 can still include `present-elsewhere` findings, so the exit code alone never substitutes for reading the JSON. Exit code 1 means at least one finding is `absent`, `file-missing`, or `unparseable`. Exit code 2 is a usage error. Fix the command and rerun it. Exit code 3 means the script parsed no finding out of the report. The report can still hold real findings in a format the script does not recognize, so on exit 3, check every finding in the report by hand.
 
@@ -202,7 +238,7 @@ After step 4 verifies the findings:
 
 When recording, mark an accepted finding that contradicts a factual brief claim with `disputes_brief: true` in the triage. Keep every reviewer's report and its final call in the run folder until the record is written.
 
-**Context management:** Native completion carries a report path and metadata. Read each saved report once for verification and triage. A full report read still enters the coordinator's context. Present one concise summary of surviving findings and the verdict. Note dropped absent or file-missing findings only by count. Later briefs carry verified findings, not repeated full reports or raw logs. Refer to findings by number in follow-up discussion.
+**Context management:** File output returns a report path and metadata. Read each saved report once for verification and triage. That read enters the coordinator's context. A native reviewer's text report enters the context at completion, so triage works from that text. Read its saved copy only after the text has left the context, such as after compaction or a session transfer. A dispatched report arrives as a file, so read it once like a file-output report. Present one concise summary of surviving findings and the verdict. Note dropped absent or file-missing findings only by count. Later briefs carry verified findings, not repeated full reports or raw logs. Refer to findings by number in follow-up discussion.
 
 **For multi-model reviews**, present a single unified findings table:
 
@@ -227,7 +263,7 @@ If the author wants to commit after approval, stage only the files related to th
 
 ### 6. Record and delete the review artifacts
 
-Native and dispatched reviews keep their prompt and raw report outside the candidate worktree. A dispatched review also keeps its worker log there. The calling workflow can retain these artifacts for recovery or review evidence.
+Native and dispatched reviews keep their prompt and raw report outside the candidate worktree. A dispatched review also keeps its worker log there. Partial files, delivery errors, and `report-delivery.json` stay beside the reports until the run directory is deleted. The calling workflow can retain these artifacts for recovery or review evidence.
 
 When a caller selects a comparison recorder, honor its supplied run folder and input-retention requirement.
 Keep the caller's selected rules and frozen versions. Save each reviewer's exact prompt when it differs from the round prompt.

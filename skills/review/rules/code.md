@@ -68,7 +68,7 @@ Write a review with:
 - A summary with overall risk level (low/medium/high)
 - Findings with file locations, severity (CRITICAL/WARNING/INFO), confidence (high/medium/low), and suggested fixes
 - **The exact text your finding rests on**, as the evidence rule above requires.
-- A verdict: APPROVE, REQUEST_CHANGES, or COMMENT
+- A verdict: APPROVE, REQUEST_CHANGES, or COMMENT, alone on the report's last line, after any coverage notes
 
 Severity and confidence are separate axes. Severity is the impact if the finding is real. Confidence is how sure you are that it is real. A high-impact guess is still a guess. **Do not use hedge words ("possibly", "might", "appears to") on a high-confidence finding** - if you are hedging, it is not high confidence, so label it medium or low.
 

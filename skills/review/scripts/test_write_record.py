@@ -78,6 +78,7 @@ class WriteRecordTest(unittest.TestCase):
         self.assertEqual(record["repository"], str(self.repo.resolve()))
         self.assertEqual(record["rounds"][0]["reviewers"][0]["call"], "APPROVE")
         self.assertEqual(record["rounds"][0]["reviewers"][0]["requests"], None)
+        self.assertNotIn("report_delivery", record["rounds"][0]["reviewers"][0])
         self.assertEqual(len(record["prompt_sha256"]), 64)
         self.assertEqual(self.write_record(self.out).returncode, 1)
 
@@ -281,6 +282,35 @@ class WriteRecordTest(unittest.TestCase):
         result = self.write_record()
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.out.exists())
+
+    def test_report_delivery_survives_recording_and_rejects_hidden_recovery(self) -> None:
+        key = json.loads((self.round_dir / "key.json").read_text(encoding="utf-8"))
+        recovered = {"selected": "file", "actual": "text", "capture": "transcribed-text", "failure": "report-write-denied"}
+        cases = (("mode change without failure", dict(recovered, failure=None)),
+                 ("text output that wrote a file", {"selected": "text", "actual": "file",
+                                                     "capture": "reviewer-file", "failure": "unexpected-text"}),
+                 ("capture from another mode", dict(recovered, capture="reviewer-file")),
+                 ("unknown failure", dict(recovered, failure="denied")),
+                 ("failure from the reverse mode change", dict(recovered, failure="output-contract-violation")),
+                 ("no-report failure with a report", dict(recovered, failure="missing")),
+                 ("failure with matching modes", {"selected": "file", "actual": "file",
+                                                  "capture": "reviewer-file", "failure": "unexpected-text"}),
+                 ("no report beside a saved report", {"selected": "file", "actual": "none",
+                                                      "capture": "none", "failure": "missing"}),
+                 ("extra field", dict(recovered, error="reports/A.delivery-error.txt")),
+                 ("list value", dict(recovered, actual=["text"])))
+        for name, delivery in cases:
+            with self.subTest(name):
+                save(self.round_dir / "key.json", {"A": dict(key["A"], report_delivery=delivery)})
+                result = self.write_record()
+                self.assertIn("report_delivery", result.stderr)
+                self.assertFalse(self.out.exists())
+        save(self.round_dir / "key.json", {"A": dict(key["A"], report_delivery=recovered)})
+        result = self.write_record()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(record["schema"], 2)
+        self.assertEqual(record["rounds"][0]["reviewers"][0]["report_delivery"], recovered)
 
     def test_failed_publish_leaves_no_record_and_can_retry(self) -> None:
         publish = runpy.run_path(str(SCRIPT))["publish"]

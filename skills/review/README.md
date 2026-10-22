@@ -6,6 +6,17 @@ Successful opted-in record publication precedes input retirement, and failed pub
 
 Before you change a review rule, read its entry here. Add the new reason in the same commit. Write it as one to three sentences on the failure the rule prevents, with no dates, hashes or history.
 
+## Contents
+
+- [Runner and rule sets](#runner-and-rule-sets)
+- [Scope and coverage](#scope-and-coverage)
+- [Findings and verification](#findings-and-verification)
+- [Reviewers and models](#reviewers-and-models)
+- [Transport and completion](#transport-and-completion)
+- [Briefs, records and artifacts](#briefs-records-and-artifacts)
+- [Author authority for exclusions](#author-authority-for-exclusions)
+- [Caller-owned comparison evidence](#caller-owned-comparison-evidence)
+
 ## Runner and rule sets
 
 The method of review changes more often than the launch, the quote check and the triage. With the code checklist embedded in the runner, a plan review needed its own copy of the launch and triage, and the two copies drifted.
@@ -30,7 +41,7 @@ A security, design or UI rule set arrives only when a real review needs it. A ru
 
 ## Scope and coverage
 
-Saved reports keep full reviewer responses out of native completion messages. Triaging a report still adds its text to the coordinator's context, so later briefs carry only verified findings. See [Why reviewer reports go to files](../../docs/orchestration.md#why-reviewer-reports-go-to-files) and [Why triage stays with the coordinator](../../docs/orchestration.md#why-triage-stays-with-the-coordinator).
+Under file output, saved reports keep full reviewer responses out of native completion messages. Triaging a report still adds its text to the coordinator's context, so later briefs carry only verified findings. See [Why reviewer reports go to files](../../docs/orchestration.md#why-reviewer-reports-go-to-files) and [Why triage stays with the coordinator](../../docs/orchestration.md#why-triage-stays-with-the-coordinator).
 
 Generated files repeat a source change, so reviewing them spends budget on copies. A defect in unchanged code is out of scope, because it must not block a change that did not cause it.
 
@@ -52,6 +63,8 @@ In an interactive review the author decides what matters. A finding the reviewer
 
 Reviewers invent text-level defects, and a correction for an invented defect adds a real one. An exact quote lets the coordinator check the text against the file, which a paraphrase defeats. A correct quote still does not prove the conclusion.
 
+The code rules put the verdict alone on the last line, so the coordinator can tell a finished report from a truncated one on every route. The record writer reads the call there.
+
 The quote check runs before the author sees any finding, so an unsupported citation never reaches the author as work. A parser failure does not prove a finding false, so unparsed findings get a manual check.
 
 ## Reviewers and models
@@ -64,7 +77,9 @@ Runners use different default efforts. Identical prompt bytes, separate result d
 
 ## Transport and completion
 
-A native reviewer writes only its assigned report outside the candidate tree. Pointer returns avoid repeated full report payloads without granting candidate edits. Separate destination metadata preserves identical comparison prompts. A comparison uses dispatch when native transport cannot separate that destination from its prompt.
+A native reviewer under file output writes only its assigned report outside the candidate tree. Pointer returns avoid repeated full report payloads without granting candidate edits, and they let the coordinator choose when to read. Separate destination metadata preserves identical comparison prompts. A file-output comparison uses dispatch when native transport cannot separate that destination from its prompt.
+
+Text output keeps native review available when a harness refuses a subagent's report write. See [When a reviewer returns text](../../docs/orchestration.md#when-a-reviewer-returns-text). The coordinator saves one canonical report before the quote check, because triage binds that file's hash. A second copy can differ by one character and break that binding.
 
 Forced dispatch added a second completion route where the native route already worked. A report-only role in a prompt does not enforce read-only file access, so a task that needs a sandbox still dispatches. See [Context and delegation](../../docs/orchestration.md#context-and-delegation).
 
@@ -81,6 +96,8 @@ After the findings settle, a code review's raw report is a duplicate nobody read
 A code review request is not a request for a lasting file, so a review record needs explicit opt-in. A plan review always writes its plan entry, because the audit of plan reviews decides from every entry. A record needs a stable target, so only an immutable candidate gets one.
 
 The coordinator captures the skill version, the last commit that touched `SKILL.md` or `rules/`, with the first prompt. A rule-file edit changes what a reviewer reads, so it counts as a new version. Capturing it first means a later skill edit cannot change the recorded version.
+
+Delivery fields are optional in schema 2, so earlier records stay valid without a rewrite, and a missing field reads as unknown. The writer checks that each mode change names its failure, so a recovered report cannot pass for a clean file delivery.
 
 Shell serializers can publish call objects that the final recorder then rejects, so the shared writer validates triage before it replaces the file. The explicit shared root keeps copied installations working without a second writer.
 

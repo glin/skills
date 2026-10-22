@@ -220,7 +220,7 @@ A delayed Codex snapshot gets one observation after a later model request, using
 
 ## Context and delegation
 
-- Native reviewers save full reports outside the candidate tree and return paths, metadata, and incomplete coverage. Full completion payloads consume coordinator context before triage begins. The coordinator reads each report once and carries only verified findings into later briefs. [Why reviewer reports go to files](#why-reviewer-reports-go-to-files) gives the reasons and costs.
+- Native reviewers under file output save full reports outside the candidate tree and return paths, metadata, and incomplete coverage. Full completion payloads consume coordinator context before triage begins. The coordinator reads each report once and carries only verified findings into later briefs. [Why reviewer reports go to files](#why-reviewer-reports-go-to-files) gives the reasons and costs.
 
 - The coordinator's own context is the largest cost. Re-reading history took most of one measured turn's spend.
 - The coordinator's token limit counts growth above the opening context. The opening context is already large.
@@ -239,7 +239,7 @@ A delayed Codex snapshot gets one observation after a later model request, using
 
 ## Why reviewer reports go to files
 
-A reviewer saves its full report in the run folder and returns the path. The file does not exist to save the coordinator's context.
+Under file output, a reviewer saves its full report in the run folder and returns the path. The file does not exist to save the coordinator's context.
 
 - A full read costs the same tokens as an inline report. Triage reads every finding, so the whole report enters the coordinator's context either way. A report saves context only when the coordinator reads less than all of it.
 - A file read can cost more than an inline report. It adds one request at the full context size, unless it rides in a call the coordinator makes anyway. That request costs about 0.03 USD at a 150,000-token context and 0.10 USD at 500,000, which is more than the report's own tokens.
@@ -255,6 +255,19 @@ Report files exist for these reasons:
 - Scripts read files. `quote_check.py` checks quotes in a saved report, and the scripts that blind reports for a model comparison and extract a Claude report from its log also take paths.
 - Later work reuses the reports. Model comparison records, review records, plan-review records and retrospectives read them after the run ends.
 - The coordinator chooses when to read a report and how much of it. An inline report arrives whole, at the moment the reviewer finishes.
+
+## When a reviewer returns text
+
+A harness can refuse a subagent's report write by its file name, after the review is done. One harness rejected Markdown names that start with `REPORT`, `SUMMARY`, `FINDINGS` or `ANALYSIS`, in any case, for every subagent. That rule does not stop every subagent write, so file output stays the default where it works.
+
+- The coordinator chooses text output before launch, when a known restriction or a saved failure rules out the write. The reviewer writes no file and returns the whole report.
+- A complete report returned after a refused write is a finished review. The coordinator saves it and keeps the write error beside it.
+- A saved failure carries through continuation. A retry under another name, tool or permission repeats a refused write or works around the harness rule.
+- Either route ends in one saved file, so the quote check, triage, records and comparisons read the same input.
+
+Text output costs more context than a file read. The report enters the context at completion. Without a mechanical export, the coordinator then writes the canonical copy itself. The report enters the context a second time, as output tokens in that write call. A file read adds the report once. Only file output lets the coordinator defer the read or read part of it, so file output stays the default.
+
+A copy the coordinator writes from a text return is transcribed, not exported. Its hash identifies the saved bytes, and a passing quote check covers those bytes. Neither proves the copy matches the reviewer's original completion. Comparisons list text recoveries, mixed modes and transcribed reports as limitations.
 
 ## Why triage stays with the coordinator
 

@@ -62,7 +62,8 @@ class TriageTest(unittest.TestCase):
 
     def test_measurements_do_not_change_binding_and_reports_do(self):
         initial = triage.identity(self.root, triage.read_json(self.root / "key.json"))
-        self.save("key.json", {"A": {"report": "one.md", "session_id": "later", "cost_usd": 12}})
+        delivery = {"selected": "file", "actual": "text", "capture": "transcribed-text", "failure": "report-write-denied"}
+        self.save("key.json", {"A": {"report": "one.md", "session_id": "later", "cost_usd": 12, "report_delivery": delivery}})
         self.assertEqual(initial, triage.identity(self.root, triage.read_json(self.root / "key.json")))
         self.run_op("calls", data={"A": "APPROVE"})
         (self.root / "one.md").write_text("COMMENT\n")

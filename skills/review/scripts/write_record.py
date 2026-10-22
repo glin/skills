@@ -28,6 +28,10 @@ VERDICTS = {"accepted", "rejected", "dropped", "deferred"}
 SEVERITIES = {"high", "medium", "low"}
 EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 COUNTERS = ("cost_usd", "minutes", "requests", "output_tokens", "thinking_tokens", "tool_calls", "shell_calls")
+DELIVERY_FIELDS = ("selected", "actual", "capture", "failure")
+DELIVERY_CAPTURES = {"file": {"reviewer-file"}, "text": {"exported-text", "transcribed-text"}, "none": {"none"}}
+WRITE_FAILURES = {"report-write-denied", "report-write-unavailable", "unexpected-text"}
+NO_REPORT_FAILURES = {"missing", "empty", "truncated"}
 
 
 def read_json(path: Path):
@@ -47,6 +51,29 @@ def text_value(value: object) -> bool:
 
 def optional_bool(value: object) -> bool:
     return value is None or type(value) is bool
+
+
+def delivery_problem(delivery: object) -> str | None:
+    if not isinstance(delivery, dict) or set(delivery) != set(DELIVERY_FIELDS):
+        return "needs exactly selected, actual, capture and failure"
+    selected, actual, capture, failure = (delivery[field] for field in DELIVERY_FIELDS)
+    if not all(isinstance(value, str) for value in (selected, actual, capture)) or not (failure is None or isinstance(failure, str)):
+        return "needs text values and a text or null failure"
+    if selected not in {"file", "text"} or actual not in DELIVERY_CAPTURES:
+        return "has an invalid selected or actual mode"
+    if capture not in DELIVERY_CAPTURES[actual]:
+        return "has a capture that does not match its actual mode"
+    if actual == "none":
+        allowed = NO_REPORT_FAILURES
+    elif actual == selected:
+        allowed = {None}
+    elif selected == "file":
+        allowed = WRITE_FAILURES
+    else:
+        allowed = {"output-contract-violation"}
+    if failure not in allowed:
+        return f"has failure {failure!r}, which does not match {selected} to {actual}"
+    return None
 
 
 def git(directory: Path, *args: str) -> str:
@@ -128,6 +155,13 @@ def build(run_dir: Path, out: Path | None) -> tuple[dict, Path]:
             reviewer = {"label": label, "model": details["model"], "effort": details["effort"],
                         "harness": details["harness"], "session": details.get("session", details.get("session_id")),
                         "call": call, "shell_denied": details.get("shell_denied")}
+            if "report_delivery" in details:
+                problem = delivery_problem(details["report_delivery"])
+                if problem:
+                    raise ValueError(f"reviewer {label} report_delivery {problem}")
+                if details["report_delivery"]["actual"] == "none":
+                    raise ValueError(f"reviewer {label} report_delivery says no report arrived, but the report exists")
+                reviewer["report_delivery"] = dict(details["report_delivery"])
             if details.get("agent_id") and reviewer["session"]:
                 reviewer["session"] += "/" + details["agent_id"]
             for field in COUNTERS:
@@ -245,6 +279,8 @@ def validate_record(record: dict) -> None:
                 raise ValueError("session must be text or null")
             if not optional_bool(reviewer["shell_denied"]):
                 raise ValueError("shell_denied must be true, false or null")
+            if "report_delivery" in reviewer and (problem := delivery_problem(reviewer["report_delivery"])):
+                raise ValueError(f"reviewer report_delivery {problem}")
             for field in COUNTERS:
                 value = reviewer[field]
                 if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or
