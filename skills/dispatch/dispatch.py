@@ -37,10 +37,8 @@ from pathlib import Path
 # it unchanged. Amazon Bedrock uses an "openai." prefix for these models.
 CODEX_MODEL_SHORTHANDS = {
     "sol": "gpt-6.1-sol",
-    "sol6": "gpt-6-sol",
     "terra": "gpt-5.6-terra",
     "luna": "gpt-6-luna",
-    "luna6": "gpt-6-luna",
     "astra": "gpt-6-astra",
 }
 BEDROCK_PROVIDER = "amazon-bedrock"

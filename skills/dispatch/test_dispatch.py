@@ -721,7 +721,7 @@ class ModelNameTests(unittest.TestCase):
                 return dispatch.resolve_codex_model(model)
 
     def test_codex_shorthands_reach_arc_start_as_full_ids(self):
-        for shorthand, model in (("sol", "gpt-6.1-sol"), ("sol6", "gpt-6-sol"), ("luna", "gpt-6-luna"),
+        for shorthand, model in (("sol", "gpt-6.1-sol"), ("luna", "gpt-6-luna"),
                                  ("gpt-6.1-sol", "gpt-6.1-sol")):
             self.assertEqual(self.resolve(shorthand), model)
 
