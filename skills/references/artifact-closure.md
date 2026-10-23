@@ -31,7 +31,9 @@ Run `inventory` to obtain every owned file's absolute path, size, and SHA-256. A
 
 Directory resources use complete `members` lists. Each member has a slash-separated relative `path`, `size`, and `sha256`. An empty member path identifies the resource file itself. Large lists use `members: {"inventory": "/absolute/members.json.gz", "sha256": "<compressed file SHA-256>", "count": 10000}`. The gzip file contains the complete JSON member list. Give that file a separate resource when it is an owned output. Never create overlapping phase inventories.
 
-A Removed resource must be absent. Archived sources retain their complete member identities and set `archive: {"resource": "<archive resource id>", "prefix": ""}`. The separate archive resource must be Retained by the same owner with its current size and SHA-256. The checker reads ZIP and tar members without extraction and checks every declared member's bytes. For an archived single file, `prefix` names its exact member. `pending_readers` blocks removal. Disposable deleted outputs use `removal: "deleted"` and specific deletion `evidence`. Archive policy still requires packing unique streams and logs.
+A Removed resource must be absent. Archived sources retain their complete member identities and set `archive: {"resource": "<archive resource id>", "prefix": ""}`. The separate archive resource must be Retained by the same owner with its current size and SHA-256. The checker reads ZIP, xz-wrapped ZIP, and tar members without extraction and checks every declared member's bytes. For an archived single file, `prefix` names its exact member. `pending_readers` blocks removal. Disposable deleted outputs use `removal: "deleted"` and specific deletion `evidence`. Archive policy still requires packing unique streams and logs.
+
+An xz-wrapped ZIP uses streaming decompression without temporary files. Backward ZIP reads repeat decompression, so direct tar.xz avoids that extra work.
 
 ## Commands and generated view
 

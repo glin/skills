@@ -4,6 +4,7 @@ import gzip
 import importlib.util
 import io
 import json
+import lzma
 import os
 from pathlib import Path
 import subprocess
@@ -63,14 +64,16 @@ class ClosureTests(unittest.TestCase):
         self.m['resources'].append(resource)
         return resource
 
-    def archived(self):
+    def archived(self, xz=False):
         source = self.root / 'logs'
         data = [('A.log', b'a' * 64), ('B.log', b'b' * 64)]
         members = [{'path': name, 'size': len(content), 'sha256': c.digest(content)} for name, content in data]
-        archive = self.root / 'logs.zip'
+        archive = self.root / ('logs.zip.xz' if xz else 'logs.zip')
         with zipfile.ZipFile(archive, 'w') as packed:
             for name, content in data:
                 packed.writestr(name, content)
+        if xz:
+            archive.write_bytes(lzma.compress(archive.read_bytes()))
         self.retained(archive, 'archive')
         removed = {'id': 'logs', 'path': str(source), 'owner': 'child', 'status': 'Removed',
                    'members': members, 'archive': {'resource': 'archive'}}
@@ -116,16 +119,66 @@ class ClosureTests(unittest.TestCase):
         self.m['resources'][0].update(size=current['size'], sha256=current['sha256'])
         self.assertIn('B.log', ' '.join(c.check(self.m)['errors']))
 
+    def test_xz_wrapped_zip_settles_through_the_cli_without_changing_inputs(self):
+        self.archived(xz=True)
+        manifest = self.base / 'manifest.json'
+        manifest.write_text(json.dumps(self.m), encoding='utf-8')
+        view = self.base / 'resources.md'
+        view.write_text(c.view(self.m, c.digest(manifest.read_bytes())), encoding='utf-8')
+        before = {str(p): p.read_bytes() for p in self.base.rglob('*') if p.is_file()}
+        with mock.patch('sys.stdout'):
+            self.assertEqual(c.main(['check', '--manifest', str(manifest), '--resource-view', str(view)]), 0)
+        self.assertEqual(before, {str(p): p.read_bytes() for p in self.base.rglob('*') if p.is_file()})
+
+    def test_xz_wrapped_zip_missing_and_changed_members_fail(self):
+        _, archive = self.archived(xz=True)
+        for content in (None, b'changed'):
+            with self.subTest(content=content):
+                payload = io.BytesIO()
+                with zipfile.ZipFile(payload, 'w') as packed:
+                    packed.writestr('A.log', b'a' * 64)
+                    if content is not None:
+                        packed.writestr('B.log', content)
+                archive.write_bytes(lzma.compress(payload.getvalue()))
+                current = c.identity(archive)
+                self.m['resources'][0].update(size=current['size'], sha256=current['sha256'])
+                result = c.check(self.m)
+                self.assertFalse(result['ok'])
+                self.assertIn('B.log', ' '.join(result['errors']))
+
+    def test_xz_wrapped_zip_links_and_duplicate_members_fail(self):
+        _, archive = self.archived(xz=True)
+        for kind in ('link', 'duplicate'):
+            with self.subTest(kind=kind):
+                payload = io.BytesIO()
+                with zipfile.ZipFile(payload, 'w') as packed:
+                    packed.writestr('A.log', b'a' * 64)
+                    if kind == 'link':
+                        link = zipfile.ZipInfo('B.log')
+                        link.create_system = 3
+                        link.external_attr = 0o120777 << 16
+                        packed.writestr(link, b'b' * 64)
+                    else:
+                        with self.assertWarnsRegex(UserWarning, 'Duplicate name'):
+                            packed.writestr('A.log', b'a' * 64)
+                archive.write_bytes(lzma.compress(payload.getvalue()))
+                current = c.identity(archive)
+                self.m['resources'][0].update(size=current['size'], sha256=current['sha256'])
+                with self.assertRaisesRegex(ValueError, 'link' if kind == 'link' else 'Duplicate'):
+                    c.check(self.m)
+
     def test_tar_archives_and_archive_links(self):
         _, archive = self.archived()
-        with tarfile.open(archive, 'w:gz') as packed:
-            for name, data in [('A.log', b'a' * 64), ('B.log', b'b' * 64)]:
-                member = tarfile.TarInfo(name)
-                member.size = len(data)
-                packed.addfile(member, io.BytesIO(data))
-        current = c.identity(archive)
-        self.m['resources'][0].update(size=current['size'], sha256=current['sha256'])
-        self.assertTrue(c.check(self.m)['ok'])
+        for mode in ('w:gz', 'w:xz'):
+            with self.subTest(mode=mode):
+                with tarfile.open(archive, mode) as packed:
+                    for name, data in [('A.log', b'a' * 64), ('B.log', b'b' * 64)]:
+                        member = tarfile.TarInfo(name)
+                        member.size = len(data)
+                        packed.addfile(member, io.BytesIO(data))
+                current = c.identity(archive)
+                self.m['resources'][0].update(size=current['size'], sha256=current['sha256'])
+                self.assertTrue(c.check(self.m)['ok'])
         with zipfile.ZipFile(archive, 'w') as packed:
             link = zipfile.ZipInfo('A.log')
             link.create_system = 3
@@ -471,6 +524,17 @@ class ClosureTests(unittest.TestCase):
         command = ['check', '--manifest', str(manifest)]
         with mock.patch('sys.stdout'), mock.patch('sys.stderr') as error:
             self.assertEqual(c.main(command), 2)
+            self.assertIn('closure:', str(error.write.call_args_list))
+
+    def test_truncated_xz_wrapped_zip_produces_a_named_input_error(self):
+        _, archive = self.archived(xz=True)
+        archive.write_bytes(archive.read_bytes()[:-12])
+        current = c.identity(archive)
+        self.m['resources'][0].update(size=current['size'], sha256=current['sha256'])
+        manifest = self.base / 'manifest.json'
+        manifest.write_text(json.dumps(self.m), encoding='utf-8')
+        with mock.patch('sys.stdout'), mock.patch('sys.stderr') as error:
+            self.assertEqual(c.main(['check', '--manifest', str(manifest)]), 2)
             self.assertIn('closure:', str(error.write.call_args_list))
 
     def test_canonical_and_installed_junction_cli(self):

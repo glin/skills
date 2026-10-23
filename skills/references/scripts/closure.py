@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import gzip
 import hashlib
 import json
@@ -174,22 +175,31 @@ def archive_members(path):
             sha.update(chunk)
             size += len(chunk)
         result[name] = (size, sha.hexdigest())
-    if zipfile.is_zipfile(path):
-        with zipfile.ZipFile(path) as archive:
-            for item in archive.infolist():
-                if stat.S_ISLNK(item.external_attr >> 16):
-                    raise ValueError(f'Archive contains a link: {item.filename}')
-                if not item.is_dir():
-                    with archive.open(item) as stream:
-                        add(item.filename, stream)
-    else:
-        with tarfile.open(path, 'r:*') as archive:
-            for item in archive:
-                if item.isfile():
-                    with archive.extractfile(item) as stream:
-                        add(item.name, stream)
-                elif not item.isdir():
-                    raise ValueError(f'Archive contains a link or special member: {item.name}')
+    with ExitStack() as contexts:
+        source = contexts.enter_context(open(path, 'rb'))
+        if source.read(6) == b'\xfd7zXZ\x00':
+            source.seek(0)
+            source = contexts.enter_context(lzma.LZMAFile(source))
+            is_zip = source.read(4) in (b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08')
+        else:
+            is_zip = zipfile.is_zipfile(source)
+        source.seek(0)
+        if is_zip:
+            with zipfile.ZipFile(source) as archive:
+                for item in archive.infolist():
+                    if stat.S_ISLNK(item.external_attr >> 16):
+                        raise ValueError(f'Archive contains a link: {item.filename}')
+                    if not item.is_dir():
+                        with archive.open(item) as stream:
+                            add(item.filename, stream)
+        else:
+            with tarfile.open(fileobj=source, mode='r:*') as archive:
+                for item in archive:
+                    if item.isfile():
+                        with archive.extractfile(item) as stream:
+                            add(item.name, stream)
+                    elif not item.isdir():
+                        raise ValueError(f'Archive contains a link or special member: {item.name}')
     return result
 
 
