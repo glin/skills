@@ -207,8 +207,8 @@ function auditSkill(dir) {
 
   // anti-patterns in the body
   const prose = stripCode(body);
-  // Shouting and a date are claims a document makes in its own voice, so both
-  // read past whatever it is only quoting.
+  // Shouting, a date and an earlier state are claims a document makes in its own
+  // voice, so these checks read past whatever it is only quoting.
   const unquoted = stripQuoted(prose);
   const shouted = shoutedWords(unquoted);
   if (shouted.length) {
