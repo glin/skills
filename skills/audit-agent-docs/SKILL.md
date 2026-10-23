@@ -27,6 +27,7 @@ node "$SKILL_DIR/scripts/audit.mjs" claude ./CLAUDE.md
 ```
 
 Read the `section` lines first and say where the mass is before choosing what to audit. A file whose largest section has never been reviewed is telling you where to go.
+Use size to set reading order. Step 2 covers every section.
 
 ### 1. Run the mechanical checks
 
@@ -55,6 +56,7 @@ The script matches shapes. These need a reader, and this step is where most of t
 - **Would a tool enforce this better?** A rule a linter, type, test, or assertion can check should be that instead. Prose only hopes someone reads it.
 - **Does the description trigger?** Read it as the only thing a fresh session sees. Would it fire on the words the author types, and stay quiet on a neighbour's work?
 - **Does it contradict a sibling?** Two files covering adjacent ground must agree on the boundary and say so.
+- **Does an always-loaded file repeat topic guidance or define a glossary, term table, or prohibited-term list?** Replace these blocks with a trigger and reference. Flag repeated audience exceptions too. Keep each policy and vocabulary list in one source, however short the block is, to prevent drift.
 
 ### 3. Count the readers before proposing a cut
 
