@@ -64,10 +64,13 @@ One hop matters because Claude previews rather than fully reads files reached th
 | Relative paths use forward slashes | backslash in a non-absolute, non-variable path | warn |
 | No path tied to one machine, user or install | drive path outside system directories, named home directory, folder in a home directory, skill install location, placeholder for the skill's own location, `..` from the skill directory | error |
 | Time-sensitive phrasing | "as of", "currently", "recently", a bare date | info |
+| Reference to an earlier state | phrases such as "older name", "formerly", "previously", "used to be", "no longer uses", "was renamed" | warn |
 
 Shouting is detected by comparing cases within one file. An acronym never appears in lower case, so it passes without an allowlist. The objection to capitals is not style: a bare imperative gives the model nothing to generalise from, so it cannot apply the rule to a case the skill did not spell out. State the rule, then why.
 
 A skill runs on machines its author never sees. A drive path, a named home directory, a folder in a home directory or a skill install location works on one of them. A skill names its own files from the directory that holds its SKILL.md, which the harness reports when it loads the skill. A placeholder for that directory leaves the reader to search the filesystem for it. A `..` from that directory follows a linked skill into its own repository, where its siblings are missing. A skill names a sibling from the skills directory, which is the skill directory with its last path component removed.
+
+An instruction file states what is true now. A sentence about an old name, a removed step or what a tool used to do tells the reader nothing to act on, and it reads as current to a model that cannot tell the two apart. Git history keeps the earlier state. A phrase in straight quotes, a code span or a block quote is exempt, because a file can name a phrase in order to forbid it. The phrases extend the `superseded` rule in `deslop`, which covers the same class in shipped text.
 
 A duplicated block is worse than a long one. Two copies means two places to update and one that gets forgotten, and the forgotten one keeps being read as current.
 
@@ -79,6 +82,7 @@ A duplicated block is worse than a long one. Two copies means two places to upda
 | Prose restating an executable guard | a symbol the repo defines, named in the prose | info |
 | Parenthetical carrying a case study | over 25 words inside parentheses | warn |
 | Dated provenance | "confirmed 2026-07-02", "fixed 2026-06-07" | info |
+| Reference to an earlier state | the same phrases as the skill rule | warn |
 | A pointer next to a retelling | bullet over 45 words that also cites a file | warn |
 | Near-duplicate bullets | 50% shared 6-word runs | warn |
 | Pasted code where a reference would do | code block over 12 lines | info |

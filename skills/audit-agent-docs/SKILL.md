@@ -51,6 +51,7 @@ The script matches shapes. These need a reader, and this step is where most of t
 
 - **For each rule, name the concrete failure that would happen without it.** No nameable failure means flag it. This is the keeping-evidence test from principle 2.
 - **Is the example carrying the rule, or is it the incident that prompted the edit?** The rule states the general class. The incident belongs in a test or a linked doc.
+- **Does it describe a state that is gone?** The script catches the common phrases. Read for the rest: a "now" that contrasts with a past, or a note about a renamed field or a removed step. Cut the sentence. Git history keeps the earlier state.
 - **Would a tool enforce this better?** A rule a linter, type, test, or assertion can check should be that instead. Prose only hopes someone reads it.
 - **Does the description trigger?** Read it as the only thing a fresh session sees. Would it fire on the words the author types, and stay quiet on a neighbour's work?
 - **Does it contradict a sibling?** Two files covering adjacent ground must agree on the boundary and say so.
@@ -106,4 +107,4 @@ It audits the paired fixtures in `fixtures/skills/` and `fixtures/claude/` and e
 
 Every case is two fixtures that differ only in the property under test: one that must trip the rule, one that must not. That pairing is what makes a passing run evidence. A green fixture alone proves nothing, because a check that never fires passes it too, which is why each pair also asserts that both halves were read.
 
-Adding a check means adding a pair. Prove it by breaking the check both ways: remove it and the green half must go red, widen it and the red half must fall silent.
+Adding a check means adding a pair. Prove it by breaking the check both ways: remove it and the red half must fall silent, widen it and the green half must go red.

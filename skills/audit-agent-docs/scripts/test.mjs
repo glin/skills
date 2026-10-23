@@ -36,6 +36,13 @@ const PAIRS = [
   ["machine-path", "skill:placeholder-path", "skill:skill-relative-path", "the script is named from $SKILL_DIR"],
   ["machine-path", "skill:sibling-parent-path", "skill:skill-relative-path", "the script is named from $SKILL_DIR"],
   ["readme-in-skill", "skill:readme-unnamed", "skill:readme-named", "SKILL.md names the README"],
+  ["superseded-state", "skill:superseded-asserted", "skill:superseded-quoted", "the old name is quoted"],
+  [
+    "superseded-state",
+    "claude.md:claude/superseded.md",
+    "claude.md:claude/current.md",
+    "the old name is gone",
+  ],
   [
     "pointer-with-retelling",
     "claude.md:claude/pointer-retells.md",

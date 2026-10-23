@@ -54,6 +54,8 @@ const GUARD_NAME = /^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+$/;
 
 const findings = [];
 
+const SUPERSEDED = /\b(older name|old name|formerly|previously|used to (be|do|have|write|read)|we decided against|no longer (uses|does|needs|has|is called)|(was|has been) (renamed|replaced|moved)|renamed (from|to))\b/gi;
+
 function report(level, target, rule, detail) {
   findings.push({ level, target, rule, detail });
 }
@@ -244,6 +246,7 @@ function auditSkill(dir) {
   }
   const dated = [...unquoted.matchAll(/\b(as of|currently|recently|new in|since version|20\d\d-\d\d-\d\d|confirmed 20\d\d)\b/gi)];
   if (dated.length) report("info", t, "time-sensitive", `${dated.length} time-sensitive phrases: ${[...new Set(dated.map((x) => x[0]))].join(", ")}`);
+  checkSuperseded(t, unquoted);
 
   // A README beside SKILL.md is a second entry point, and a reader has no order
   // between them. A README that SKILL.md names is an ordinary reference file one
@@ -494,6 +497,13 @@ function checkStaleReferences(t, text, root, selfPath) {
   }
 }
 
+// A sentence about a state that is gone, such as an old name or what a tool used
+// to do, costs every reader and changes nothing they do. Git history keeps it.
+function checkSuperseded(t, prose) {
+  const hits = [...prose.matchAll(SUPERSEDED)];
+  if (hits.length) report("warn", t, "superseded-state", `${hits.length} references to an earlier state: ${[...new Set(hits.map((x) => x[0].toLowerCase()))].join(", ")}`);
+}
+
 function auditClaudeMd(file, root) {
   const t = `claude.md:${file.replace(/\\/g, "/").split("/").slice(-2).join("/")}`;
   const text = fs.readFileSync(file, "utf8");
@@ -501,6 +511,7 @@ function auditClaudeMd(file, root) {
   const prose = stripCode(text);
 
   report("stat", t, "size", `${lines.length} lines, ${words(prose)} words`);
+  checkSuperseded(t, stripQuoted(prose));
 
   // Instruction budget: bullets and standalone directive paragraphs.
   const bullets = lines.filter((l) => /^\s*[-*]\s+\S/.test(l)).length;
