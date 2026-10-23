@@ -1,7 +1,7 @@
 ---
 name: audit-agent-docs
 description: "Audit the instruction files agents load every session, CLAUDE.md and AGENTS.md and SKILL.md, against Anthropic's skill-authoring guidance and progressive-disclosure rules. Measures where the words actually are, then reports stale references to files that no longer exist, prose restating a guard the repo already runs, blocks duplicated across files, case-study bloat, and invalid frontmatter. Use when: audit my skills, review CLAUDE.md, is my CLAUDE.md too long, my agent instructions are getting bloated, check a skill against best practices, before adding a new skill. For stripping LLM-marker writing out of shipped code and public docs, use deslop instead."
-argument-hint: "[paths to skill dirs and/or CLAUDE.md files; blank audits the global skills folder and the repo's CLAUDE.md]"
+argument-hint: "[paths to skill dirs in the skills source repository, and/or CLAUDE.md files]"
 ---
 
 # Audit agent docs
@@ -14,7 +14,6 @@ Instruction files drift the same way everywhere. A SKILL.md accumulates detail u
 2. **Never ask whether a rule is worth its tokens.** The model running the audit is often the model that wrote the rule, and it will say yes. Ask mechanical questions with an external anchor, and require evidence for *keeping* rather than for cutting. Step 3 is the mechanical form of that for anything the file defines.
 3. **Run it cold.** A session that just added three rules should not judge them. Run at the start of a session, or from a subagent with no memory of the edits.
 4. **Propose, never auto-apply.** The output is a table the owner accepts or rejects line by line.
-5. **Put the judgement step in the procedure, not in a rules list.** A procedure anchored on a grep can only process what the grep matched, so a rule about what grep cannot see never runs. Reading is a numbered step below, not a rule to remember.
 
 ## Procedure
 
@@ -40,7 +39,7 @@ node "$SKILL_DIR/scripts/audit.mjs" both \
 
 **Point `--skills` at the source repo, not `~/.claude/skills`.** That directory also holds plugin-marketplace skills, which differ per machine and belong to nobody working here. A count taken from it cannot be compared against another machine's or acted on, and two people auditing the same skills will report different totals and both be right. Quote plugin-skill findings separately, and say that is what they are.
 
-`--root` enables the two checks that need the repo: whether the files, directories, and symbols the instructions name still exist, and whether a rule restates a guard the repo already executes. Junctions and symlinks are followed, so a doc inside a linked-in package still counts as present. Without `--root` those two are skipped and everything else still runs. A `--root` with no path is an error.
+Two checks read the repository, and they run on CLAUDE.md files only: whether the files, directories, and symbols the instructions name still exist, and whether a rule restates a guard the repo already executes. `--root` names that repository. Without it, each CLAUDE.md file's own folder stands in, so pass `--root` for a file whose references point elsewhere in the repo. Junctions and symlinks are followed, so a doc inside a linked-in package still counts as present. A `--root` with no path is an error.
 
 A skill path can be one skill directory or a directory of skills. A directory with its own `SKILL.md` counts as one skill. The summary prints how many skills and CLAUDE.md files it read. A path that does not exist, or a named category that finds nothing to read, is an error. In `both` mode you can leave out one of `--skills` and `--claude`, but not both.
 
@@ -79,7 +78,7 @@ Three outcomes, hardest to cut first:
 
 Frequency decides nothing on its own. A field written into every artifact and read by nothing is the strongest cut in the file. One written rarely but cited from elsewhere is not a cut at all.
 
-When a cut is approved, existing artifacts keep the old shape. Say so in the file, and name the next edit of that artifact as the moment to normalise it. A sweep across settled records costs review churn and gains nothing.
+When a cut is approved, add a line to the instruction file that says each existing artifact moves to the new shape at its next edit. Settled artifacts stay as they are, because a sweep across settled records costs review churn and gains nothing.
 
 ### 4. Group and propose
 
@@ -97,7 +96,9 @@ Report the delta against step 0. That number is the feedback the writing model n
 
 Do not restructure and trim in the same pass. Trimming in place lowers the count without changing why it grew, so the next pass starts over. Move the evidence out first, then measure.
 
-## Changing the script
+## Changing the skill
+
+Put a judgement step in the procedure, not in a rules list. A procedure anchored on a grep can only process what the grep matched, so a rule about what grep cannot see never runs. Reading is a numbered step, not a rule to remember.
 
 `scripts/audit.mjs` has a test harness. Run it after any edit to a check:
 

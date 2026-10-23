@@ -38,7 +38,7 @@ The rules above that are made of fixed vocabulary, as regular expressions. `scan
     "agent-jargon":   "\\b(kill test|oracle|load-bearing|belt and suspenders|greppable|scouted|smoke[- ]test\\w*|falsified)\\b",
     "dated":          "(fixed 20\\d\\d|as of 20\\d\\d|since the [^.]{0,30}fix landed)",
     "dated-stamp":    "20\\d\\d-\\d\\d-\\d\\d",
-    "superseded":     "\\b(previously|used to (be|do|have|write|read)|formerly|we decided against|no longer uses|has been (renamed|replaced|moved))\\b",
+    "superseded":     "\\b(previously|used to be|formerly|we decided against|no longer uses|has been (renamed|replaced|moved))\\b",
     "reviewer-narr":  "\\b(note that|this is correct because|as mentioned|as noted above|worth noting|to be clear)\\b",
     "prose-tell":     "\\b(let's|simply|robust|seamless\\w*|comprehensive|leverage[ds]?|delve|it's important to note|in summary)\\b",
     "academic":       "\\b(tautolog\\w*|by construction|orthogonal|vacuous\\w*|isomorphic|a priori|modulo)\\b",

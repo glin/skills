@@ -3,6 +3,7 @@
 ## Contents
 
 - Sources
+- Quoted text
 - Skill rules: frontmatter
 - Skill rules: body and structure
 - Skill rules: content
@@ -17,6 +18,10 @@
 - Community reporting on CLAUDE.md sizing and progressive disclosure
 
 Where the sources disagree, the platform docs win, except on naming: the docs prefer gerund names (`processing-pdfs`), and also warn against inconsistent patterns inside one collection. A collection already built on verb-object names stays that way.
+
+## Quoted text
+
+The checks that judge a file's own wording skip text in straight double quotes, code spans and block quotes, because a file can quote a phrase in order to forbid it. The checks that skip quoted text are shouting, time-sensitive phrasing, an earlier state, hand-maintained sync and dated provenance. Path, link and reference checks still read quoted text.
 
 ## Skill rules: frontmatter
 
@@ -59,7 +64,7 @@ One hop matters because Claude previews rather than fully reads files reached th
 | Rule | Detection | Level |
 |---|---|---|
 | Same block of text in two skills | 25+ identical words | warn |
-| Currency depends on someone remembering | "keep them identical", "bump quarterly", "last reviewed" | warn |
+| Currency depends on someone remembering | "keep them identical", "source of truth for the", "bump quarterly", "last reviewed" | warn |
 | Words capitalised for emphasis | capitalised word that also appears lower case in the same file | warn |
 | Relative paths use forward slashes | backslash in a non-absolute, non-variable path | warn |
 | No path tied to one machine, user or install | drive path outside system directories, named home directory, folder in a home directory, skill install location, placeholder for the skill's own location, `..` from the skill directory | error |
@@ -70,7 +75,7 @@ Shouting is detected by comparing cases within one file. An acronym never appear
 
 A skill runs on machines its author never sees. A drive path, a named home directory, a folder in a home directory or a skill install location works on one of them. A skill names its own files from the directory that holds its SKILL.md, which the harness reports when it loads the skill. A placeholder for that directory leaves the reader to search the filesystem for it. A `..` from that directory follows a linked skill into its own repository, where its siblings are missing. A skill names a sibling from the skills directory, which is the skill directory with its last path component removed.
 
-An instruction file states what is true now. A sentence about a renamed field, a removed step or an earlier behaviour tells the reader nothing to act on, and it reads as current to a model that cannot tell the two apart. Git history keeps the earlier state. A phrase in straight quotes, a code span or a block quote is exempt, because a file can name a phrase in order to forbid it. The phrases extend the `superseded` rule in `deslop`, which covers the same class in shipped text.
+An instruction file states what is true now. A sentence about a renamed field, a removed step or an earlier behaviour tells the reader nothing to act on, and it reads as current to a model that cannot tell the two apart. Git history keeps the earlier state. The phrases extend the `superseded` rule in `deslop`, which covers the same class in shipped text.
 
 A duplicated block is worse than a long one. Two copies means two places to update and one that gets forgotten, and the forgotten one keeps being read as current.
 
@@ -89,7 +94,7 @@ A duplicated block is worse than a long one. Two copies means two places to upda
 | Per-section size and share | reported, not gated | stat |
 | Size and instruction count | reported, not gated | stat |
 
-The stale-reference and guard checks need `--root`. Both follow junctions and symlinks, since a linked-in package is a common home for referenced docs, and both skip whatever the repo's own ignore rules exclude, so build output and caches never reach the index. A reference counts as present if it resolves as written, resolves relative to the instruction file, or matches a file anywhere in the repo by name, so a filename cited without its directory is not reported. Only tokens ending in a trailing slash or in a file extension are considered, either a common extension or one the repo itself uses, which keeps property accesses and dotted identifiers out of the results.
+The stale-reference and guard checks run on every CLAUDE.md file. `--root` names the repository, and without it the file's own folder stands in. Both follow junctions and symlinks, since a linked-in package is a common home for referenced docs, and both skip whatever the repo's own ignore rules exclude, so build output and caches never reach the index. A reference counts as present if it resolves as written, resolves relative to the instruction file, or matches a file anywhere in the repo by name, so a filename cited without its directory is not reported. Only tokens ending in a trailing slash or in a file extension are considered, either a common extension or one the repo itself uses, which keeps property accesses and dotted identifiers out of the results.
 
 The guard check is the highest-value mechanical check because acting on it needs no taste: if a rule names a validator or test the build already runs, the rule can be one line pointing at it. It reports at info because a name match is not proof the prose is redundant, only that it is worth reading for redundancy.
 
@@ -101,7 +106,7 @@ The instruction count is the number to watch. Models follow on the order of 150 
 
 A pointer is the fix, not the defect. `See docs/x.md` replacing a story is progressive disclosure working. The defect is the story plus the pointer, which pays for the evidence twice. That is why the rule keys on length rather than on the presence of a path.
 
-Dated provenance reports at info rather than warn. A date on a rule about external behaviour is a claim about when that behaviour was last checked, which is worth having in a file that is deliberately a ledger. Treat each one as a prompt to re-confirm the rule, not as text to delete.
+Dated provenance reports at info rather than warn, because a file that is deliberately a ledger keeps its dates. Re-confirm each dated rule, then remove the date unless the file is a ledger.
 
 ## What the script deliberately does not check
 
@@ -109,7 +114,5 @@ Dated provenance reports at info rather than warn. A date on a rule about extern
 - Whether two rules should merge.
 - Whether the phrasing is clear.
 - Whether an example is doing real work.
-- Whether the file is still true about the world.
-- Whether a field or convention the file defines still has a reader. Answering it needs the artifact directory and the pattern the field writes, which vary per repository. Step 3 of the procedure does it with two greps.
-
-The last one is the highest-value check in the whole audit and it is entirely a reading pass. Everything a skill asserts about a model name, a tool name, a path, or a harness behaviour should be confirmed against the current state before the audit closes.
+- Whether the file is still true about the world. Confirm every model name, tool name, path or harness behaviour that a skill asserts against the current state before the audit closes.
+- Whether a field or convention the file defines still has a reader. Answering it needs the artifact directory and the pattern the field writes, which vary per repository. Step 3 of the procedure answers it.

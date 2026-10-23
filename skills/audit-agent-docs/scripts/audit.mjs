@@ -54,7 +54,7 @@ const GUARD_NAME = /^[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+$/;
 
 const findings = [];
 
-const SUPERSEDED = /\b(older name|old name|formerly|previously|used to (be|do|have|write|read)|we decided against|no longer (uses|does|needs|has|is called)|(was|has been) (renamed|replaced|moved)|renamed (from|to))\b/gi;
+const SUPERSEDED = /\b(older name|old name|formerly|previously|used to be|we decided against|no longer (uses|does|needs|has|is called)|(was|has been) (renamed|replaced|moved)|renamed (from|to))\b/gi;
 
 function report(level, target, rule, detail) {
   findings.push({ level, target, rule, detail });
@@ -207,8 +207,8 @@ function auditSkill(dir) {
 
   // anti-patterns in the body
   const prose = stripCode(body);
-  // Shouting, a date and an earlier state are claims a document makes in its own
-  // voice, so these checks read past whatever it is only quoting.
+  // Wording checks judge claims a document makes in its own voice, so they read
+  // past whatever it is only quoting. Path and link checks still read quotes.
   const unquoted = stripQuoted(prose);
   const shouted = shoutedWords(unquoted);
   if (shouted.length) {
@@ -241,7 +241,7 @@ function auditSkill(dir) {
   for (const [pattern, what] of machinePaths) {
     for (const m of body.matchAll(pattern)) report("error", t, "machine-path", `${what}: \`${m[0]}\``);
   }
-  for (const m of prose.matchAll(/\b(keep them identical|source of truth for the|bump .{0,20}quarterly|last reviewed)\b/gi)) {
+  for (const m of unquoted.matchAll(/\b(keep them identical|source of truth for the|bump .{0,20}quarterly|last reviewed)\b/gi)) {
     report("warn", t, "hand-maintained-sync", `"${m[0]}" makes currency depend on someone remembering`);
   }
   const dated = [...unquoted.matchAll(/\b(as of|currently|recently|new in|since version|20\d\d-\d\d-\d\d|confirmed 20\d\d)\b/gi)];
@@ -406,8 +406,17 @@ function indexRepo(root) {
       }
     }
   })(root);
+  const read = new Set();
   (function walk(dir) {
     if (bytes > MAX_SCAN_BYTES) return;
+    let real;
+    try {
+      real = fs.realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (read.has(real)) return;
+    read.add(real);
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -418,7 +427,15 @@ function indexRepo(root) {
       if (bytes > MAX_SCAN_BYTES) return;
       const full = path.join(dir, e.name);
       const rel = path.relative(root, full).replace(/\\/g, "/");
-      if (e.isDirectory()) {
+      let isDir = e.isDirectory();
+      if (!isDir && e.isSymbolicLink()) {
+        try {
+          isDir = fs.statSync(full).isDirectory();
+        } catch {
+          isDir = false;
+        }
+      }
+      if (isDir) {
         if (!skipDir(rel, e.name)) walk(full);
         continue;
       }
@@ -557,9 +574,9 @@ function auditClaudeMd(file, root) {
   }
 
   // A date attached to a rule is a claim about when it was last true, which is
-  // useful in a file that is explicitly a ledger. It is reported so it can be
-  // re-checked, not because it should be removed.
-  for (const m of prose.matchAll(/\(?(confirmed|verified|fixed|added|review(?:ed)?|as of)\s+20\d\d-\d\d(-\d\d)?\)?/gi)) {
+  // useful in a file that is explicitly a ledger. It is reported so the rule can
+  // be re-checked.
+  for (const m of stripQuoted(prose).matchAll(/\(?(confirmed|verified|fixed|added|review(?:ed)?|as of)\s+20\d\d-\d\d(-\d\d)?\)?/gi)) {
     const line = text.slice(0, m.index).split(/\r?\n/).length;
     report("info", t, "dated-provenance", `line ${line}: "${m[0]}", worth re-confirming`);
   }
@@ -644,7 +661,8 @@ function main() {
   } else {
     console.error(
       "usage: audit.mjs skills <dir>... | claude <file>... | both --skills <dir>... --claude <file>...\n" +
-        "       --root <repo> enables the stale-reference and guard-duplication checks"
+        "       --root <repo> sets the repository for the stale-reference and guard-duplication checks\n" +
+        "                     (default: the folder of each CLAUDE.md file)"
     );
     process.exit(2);
   }

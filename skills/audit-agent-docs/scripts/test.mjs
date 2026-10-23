@@ -37,6 +37,8 @@ const PAIRS = [
   ["machine-path", "skill:sibling-parent-path", "skill:skill-relative-path", "the script is named from $SKILL_DIR"],
   ["readme-in-skill", "skill:readme-unnamed", "skill:readme-named", "SKILL.md names the README"],
   ["superseded-state", "skill:superseded-asserted", "skill:superseded-quoted", "the old name is quoted"],
+  ["superseded-state", "skill:used-to-asserted", "skill:used-to-passive", "used to is a passive, not an earlier state"],
+  ["hand-maintained-sync", "skill:sync-asserted", "skill:sync-quoted", "the phrase is quoted"],
   [
     "superseded-state",
     "claude.md:claude/superseded.md",
@@ -60,6 +62,12 @@ const PAIRS = [
     "claude.md:claude/dated-provenance.md",
     "claude.md:claude/undated.md",
     "the date stamp is gone",
+  ],
+  [
+    "dated-provenance",
+    "claude.md:claude/dated-provenance.md",
+    "claude.md:claude/dated-quoted.md",
+    "the date stamp is quoted",
   ],
 ];
 
@@ -187,6 +195,79 @@ try {
   check(inside.status === 0 && !/name-mismatch/.test(inside.stdout), "current skill directory: exit 0 with no name mismatch");
 } finally {
   fs.rmSync(selection, { recursive: true, force: true });
+}
+
+// Every phrase that a regex body of words, | and (...) groups can match.
+function expand(src) {
+  const alts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")") depth--;
+    else if (src[i] === "|" && depth === 0) {
+      alts.push(src.slice(start, i));
+      start = i + 1;
+    }
+  }
+  alts.push(src.slice(start));
+  return alts.flatMap((alt) => {
+    const open = alt.indexOf("(");
+    if (open < 0) return [alt];
+    let close = open;
+    for (let d = 0; close < alt.length; close++) {
+      if (alt[close] === "(") d++;
+      else if (alt[close] === ")" && --d === 0) break;
+    }
+    const head = alt.slice(0, open);
+    const tails = expand(alt.slice(close + 1));
+    return expand(alt.slice(open + 1, close)).flatMap((mid) => tails.map((tail) => head + mid + tail));
+  });
+}
+
+// The earlier-state phrases extend the deslop superseded rule. Each phrase that
+// rule matches must also trip superseded-state, or the two lists have drifted.
+const deslopSkill = path.join(path.dirname(skill), "deslop", "SKILL.md");
+if (fs.existsSync(deslopSkill)) {
+  const block = fs.readFileSync(deslopSkill, "utf8").match(/```json deslop-patterns\r?\n([\s\S]*?)```/);
+  const phrases = expand(JSON.parse(block[1]).rules.superseded.replace(/^\\b\(/, "").replace(/\)\\b$/, ""));
+  const plain = phrases.every((ph) => /^[a-z' ]+$/i.test(ph));
+  check(plain, "deslop superseded phrases are plain words: " + phrases.join(", "));
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), "audit-shared-"));
+  try {
+    phrases.forEach((ph, i) => {
+      fs.mkdirSync(path.join(shared, "phrase-" + i));
+      fs.writeFileSync(
+        path.join(shared, "phrase-" + i, "SKILL.md"),
+        `---\nname: phrase-${i}\ndescription: Fixture for one deslop phrase. Use when the test harness runs, never in real work.\n---\n\n# Phrase\n\nThe parser ${ph} the cache.\n`
+      );
+    });
+    const r = spawnSync(process.execPath, [path.join(here, "audit.mjs"), "skills", shared], { encoding: "utf8" });
+    phrases.forEach((ph, i) =>
+      check(new RegExp(`skill:phrase-${i}\\s+superseded-state`).test(r.stdout), `superseded-state: catches the deslop phrase "${ph}"`)
+    );
+  } finally {
+    fs.rmSync(shared, { recursive: true, force: true });
+  }
+} else {
+  console.log("skip  deslop is not beside this skill, so the shared phrase check did not run");
+}
+
+// The symbol scan follows a directory link, as the path index does.
+const linked = fs.mkdtempSync(path.join(os.tmpdir(), "audit-linked-"));
+try {
+  const repo = path.join(linked, "repo");
+  fs.mkdirSync(path.join(linked, "pkg"));
+  fs.mkdirSync(repo);
+  fs.writeFileSync(path.join(linked, "pkg", "checks.js"), "function CheckLinkedGuard() {}\n");
+  fs.writeFileSync(path.join(repo, "CLAUDE.md"), "## Checks\n\n- Run CheckLinkedGuard before you commit.\n");
+  const run = () =>
+    spawnSync(process.execPath, [path.join(here, "audit.mjs"), "claude", path.join(repo, "CLAUDE.md"), "--root", repo], { encoding: "utf8" }).stdout;
+  check(!/restates-a-guard/.test(run()), "restates-a-guard: silent when no link reaches the symbol");
+  fs.symlinkSync(path.join(linked, "pkg"), path.join(repo, "linked"), "junction");
+  check(/restates-a-guard.*CheckLinkedGuard/.test(run()), "restates-a-guard: reads a symbol behind a directory link");
+} finally {
+  fs.rmSync(linked, { recursive: true, force: true });
 }
 
 console.log("\n" + failed + " failed, " + total + " checks");
