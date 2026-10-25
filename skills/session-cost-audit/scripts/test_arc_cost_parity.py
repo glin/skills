@@ -36,14 +36,16 @@ class ArcResolverTest(unittest.TestCase):
 
     def test_full_command_override_passes_arguments_and_requests_json(self) -> None:
         self.env["ARC_STATUS"] = f'node "{self.root / "custom bundle.cjs"}"'
-        completed = subprocess.CompletedProcess([], 0, json.dumps({"schemaVersion": 2, "combined": {}}), "")
-        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(ARC.subprocess, "run", return_value=completed) as run:
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                self.assertEqual(ARC.main(["session", "--since", "2026-09-01T00:00:00Z"]), 0)
-        self.assertEqual(json.loads(output.getvalue())["schemaVersion"], 2)
-        self.assertEqual(run.call_args.args[0], ["node", str(self.root / "custom bundle.cjs"), "cost", "session", "--since", "2026-09-01T00:00:00Z", "--json"])
-        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        for version in (2, 3):
+            with self.subTest(schemaVersion=version):
+                completed = subprocess.CompletedProcess([], 0, json.dumps({"schemaVersion": version, "combined": {}}), "")
+                with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(ARC.subprocess, "run", return_value=completed) as run:
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        self.assertEqual(ARC.main(["session", "--since", "2026-09-01T00:00:00Z"]), 0)
+                self.assertEqual(json.loads(output.getvalue())["schemaVersion"], version)
+                self.assertEqual(run.call_args.args[0], ["node", str(self.root / "custom bundle.cjs"), "cost", "session", "--since", "2026-09-01T00:00:00Z", "--json"])
+                self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
 
     @unittest.skipUnless(os.name == "nt", "Windows command-line quoting")
     def test_single_quoted_windows_override(self) -> None:
@@ -301,7 +303,7 @@ class ArcResolverTest(unittest.TestCase):
                "HOME": str(home), "USERPROFILE": str(home), "ARC_EDITOR_EXECUTABLE": sys.executable,
                "ARC_TEST_PERCENT": "controlled expansion"}
         argument_cases = [
-            [str(self.root / "session transcript.jsonl"), "--since", "2026-09-01T00:00:00Z", "--by-tool-kind"],
+            [str(self.root / "session transcript.jsonl"), "--since", "2026-09-01T00:00:00Z", "--by-tool"],
             ["session", "--until-text", "alpha|echo"],
             ["session&echo.jsonl"],
             ["%ARC_TEST_PERCENT%.jsonl", "--until-text", "%ARC_TEST_PERCENT%"],
@@ -448,12 +450,12 @@ class ArcResolverTest(unittest.TestCase):
 
     def test_unknown_schema_exits_two(self) -> None:
         self.env["ARC_STATUS"] = "node fixture.cjs"
-        completed = subprocess.CompletedProcess([], 0, '{"schemaVersion": 3}', "")
+        completed = subprocess.CompletedProcess([], 0, '{"schemaVersion": 4}', "")
         with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(ARC.subprocess, "run", return_value=completed):
             error = io.StringIO()
             with contextlib.redirect_stderr(error):
                 self.assertEqual(ARC.main(["session"]), 2)
-        self.assertIn("schemaVersion 2", error.getvalue())
+        self.assertIn("schemaVersion 2 or 3", error.getvalue())
 
     def test_arc_error_passes_through(self) -> None:
         bundle = self.root / "fixture.cjs"
@@ -490,7 +492,7 @@ class ArcFixtureTest(unittest.TestCase):
                                             capture_output=True, text=True, encoding="utf-8", env={**os.environ, "ARC_STATUS": ""})
                     self.assertEqual(result.returncode, 0, result.stderr)
                     report = json.loads(result.stdout)
-                    self.assertEqual(report["schemaVersion"], 2)
+                    self.assertIn(report["schemaVersion"], ARC.SCHEMA_VERSIONS)
                     self.assertEqual(report["parent"]["requests"], 1)
                     self.assertEqual(report["combined"]["requests"], 2)
                     self.assertEqual(report["parent"]["costUsd"], 0.0075)

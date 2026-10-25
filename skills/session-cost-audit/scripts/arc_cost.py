@@ -13,7 +13,8 @@ import subprocess
 import sys
 
 
-SCHEMA_VERSION = 2
+# Arc schema 3 renamed the tool report, which this adapter does not read.
+SCHEMA_VERSIONS = (2, 3)
 
 
 def normalize_target(target: str) -> str:
@@ -256,8 +257,8 @@ def main(args: list[str] | None = None) -> int:
     except json.JSONDecodeError:
         print("Arc returned invalid cost JSON.", file=sys.stderr)
         return 2
-    if not isinstance(report, dict) or report.get("schemaVersion") != SCHEMA_VERSION:
-        print(f"Unsupported Arc cost schema. Expected schemaVersion {SCHEMA_VERSION}.", file=sys.stderr)
+    if not isinstance(report, dict) or report.get("schemaVersion") not in SCHEMA_VERSIONS:
+        print("Unsupported Arc cost schema. Expected schemaVersion 2 or 3.", file=sys.stderr)
         return 2
     output = result.stdout if result.stdout.endswith("\n") else result.stdout + "\n"
     if hasattr(sys.stdout, "buffer"):
