@@ -160,6 +160,9 @@ def operate(round_dir, operation, *, expected_key=None, expected_target=None, da
     key_path, target = round_dir / "key.json", round_dir / "triage.json"
     if operation == "check-key":
         return binding(identity(round_dir, data))
+    if operation == "initialize" and expected_target == "absent" and target.exists():
+        # A retried initialize returns the existing triage without writing it.
+        expected_target = file_digest(target)
     read_checks = [(source, expected) for source, expected in
                    [(key_path, expected_key), (target, expected_target), (round_dir / "round.json", expected_round)]
                    if expected is not None]
@@ -281,7 +284,7 @@ def operate(round_dir, operation, *, expected_key=None, expected_target=None, da
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, epilog="initialize creates null calls. calls updates a subset. findings replaces decisions while preserving calls. adopt requires a verified identity digest. snapshot reserves previous-key.json. publish-key requires a matching previous-key snapshot and preserves triage. rekey remaps stable report identities and clears the pending slot after validation. validate requires complete calls and accepts expected file digests. check-key validates a proposed key on stdin. identity prints the immutable projection. Updates require expected file digests, independently of identity.")
+    parser = argparse.ArgumentParser(description=__doc__, epilog="initialize creates null calls, and a retry returns the existing triage unchanged. calls updates a subset. findings replaces decisions while preserving calls. adopt requires a verified identity digest. snapshot reserves previous-key.json. publish-key requires a matching previous-key snapshot and preserves triage. rekey remaps stable report identities and clears the pending slot after validation. validate requires complete calls and accepts expected file digests. check-key validates a proposed key on stdin. identity prints the immutable projection. Updates require expected file digests, independently of identity.")
     parser.add_argument("operation", choices=["initialize", "calls", "findings", "adopt", "rekey", "snapshot", "publish-key", "validate", "identity", "check-key"])
     parser.add_argument("round", type=Path)
     parser.add_argument("--expected-key")

@@ -48,6 +48,20 @@ class TriageTest(unittest.TestCase):
         self.assertEqual((self.root / "triage.json").read_bytes(), before)
         self.assertEqual(list(self.root.glob("*.tmp")), [])
 
+    def test_initialize_retry_returns_existing_triage_unchanged(self):
+        self.run_op("calls", data={"A": "APPROVE"})
+        before = (self.root / "triage.json").read_bytes()
+        args = [sys.executable, str(Path(triage.__file__)), "initialize", str(self.root),
+                "--expected-key", triage.file_digest(self.root / "key.json"), "--expected-target", "absent"]
+        result = subprocess.run(args, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["calls"], {"A": "APPROVE"})
+        self.assertEqual((self.root / "triage.json").read_bytes(), before)
+        args[args.index("--expected-key") + 1] = "0" * 64
+        result = subprocess.run(args, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"key.json", result.stderr)
+
     def test_partial_calls_final_validation_and_finding_updates(self):
         with self.assertRaises(ValueError):
             triage.operate(self.root, "validate")
