@@ -6,7 +6,7 @@ admission of a paid launch, unpriced usage, and the round rules for a fix round.
 context counts are checkpoints, so the script reports them and never stops on them. Every other
 stop condition in the calling workflow still binds.
 
-The cost source is the Arc report from session-cost-audit's arc_cost.py, schema version 2.
+The cost source is the Arc report from session-cost-audit's arc_cost.py, schema version 2 or 3.
 Pass --cost-json to read a saved report instead of running arc_cost.py.
 
 The cache_expiry line reports the report's combined cacheExpiry.extraCostAfterExpiryUsd: what
@@ -46,7 +46,7 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSIONS = (2, 3)
 UNAVAILABLE = "unavailable"
 UNKNOWN = "unknown"
 # A rebuild premium above either threshold sets flag: true on the cache_expiry line.
@@ -123,7 +123,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     source.add_argument("--arc-cost", help="Path to arc_cost.py. Defaults to the session-cost-audit skill beside this one.")
     source.add_argument("--cost-json", help="Read a saved Arc cost report instead of running arc_cost.py.")
     source.add_argument("--dispatched-cost", help="dispatched-cost.json from the run folder.")
-    source.add_argument("--snapshot-recovery", choices=("first", "observe"), help="Retain the first report or make its single later observation.")
+    source.add_argument("--snapshot-recovery", choices=("first", "observe", "retry"), help="Retain evidence, observe a named request, or retry the frozen window with automatic request discovery.")
     source.add_argument("--recovery-request", help="Completed Codex response ID after the first observation.")
     source.add_argument("--no-worker-launches", action="store_true", help="Confirm no worker launched between observations.")
     source.add_argument("--recovery-commitments", help="JSON dollar bounds for recovery, coordinator, check, verification, workers and close.")
@@ -182,8 +182,8 @@ def load_report(arguments: argparse.Namespace) -> dict[str, Any]:
         report = json.loads(text)
     except json.JSONDecodeError:
         raise CostError("the cost report is not JSON") from None
-    if not isinstance(report, dict) or report.get("schemaVersion") != SCHEMA_VERSION:
-        raise CostError(f"the cost report is not Arc cost schema version {SCHEMA_VERSION}")
+    if not isinstance(report, dict) or report.get("schemaVersion") not in SCHEMA_VERSIONS:
+        raise CostError(f"the cost report is not Arc cost schema version 2 or 3")
     return report
 
 
@@ -271,16 +271,32 @@ def recovery_sources(report: dict[str, Any], previous: list[dict] | None = None)
     sources = [dict(report["parent"], **report["source"]), *(report.get("children") or [])]
     result = []
     for index, source in enumerate(sources):
-        if source.get("kind") not in ("codex", "codex-thread") or not source.get("file") or not source.get("sessionId"):
-            raise CostError("snapshot recovery requires identified Codex source files")
+        kind = source.get("kind")
+        claude_child = index > 0 and kind in ("claude-subagent", "claude-session")
+        if (kind not in ("codex", "codex-thread") and not claude_child) or not source.get("file") or not source.get("sessionId"):
+            raise CostError("snapshot recovery requires identified Codex sources or complete Claude child files")
         path = Path(source["file"])
         stat = path.stat()
         raw = path.read_bytes()
         saved = previous[index] if previous and index < len(previous) else None
-        if saved and (saved["sessionId"] != source["sessionId"] or saved["file"] != str(path)
+        if saved and (saved.get("kind") != kind or saved["sessionId"] != source["sessionId"] or saved["file"] != str(path)
                       or saved["identity"] != [stat.st_dev, stat.st_ino] or len(raw) < saved["size"]
                       or hashlib.sha256(raw[:saved["size"]]).hexdigest() != saved["sha256"]):
             raise CostError("snapshot recovery source was replaced or rewritten")
+        if claude_child:
+            if (child_doubts(source) or source.get("coverage") not in (None, "recorded-reconciled")
+                    or source.get("coverageDefect") or whole(source.get("requests")) is None
+                    or whole(source.get("pricedRequests")) != source["requests"]
+                    or source.get("unpricedRequests") != 0 or source.get("unpricedModels")
+                    or number(source.get("pricedCostUsd")) is None or source["pricedCostUsd"] < 0
+                    or number(source.get("costUsd")) != number(source.get("pricedCostUsd"))):
+                raise CostError("snapshot recovery requires complete priced Claude children")
+            if saved and (len(raw) != saved["size"] or source != saved.get("summary")):
+                raise CostError("snapshot recovery completed Claude child changed")
+            result.append({"kind": kind, "sessionId": source["sessionId"], "file": str(path),
+                           "identity": [stat.st_dev, stat.st_ino], "size": len(raw),
+                           "sha256": hashlib.sha256(raw).hexdigest(), "summary": source, "bills": {}, "later": {}})
+            continue
         bills = {}
         later = {}
         for line in raw.splitlines():
@@ -303,7 +319,7 @@ def recovery_sources(report: dict[str, Any], previous: list[dict] | None = None)
                 later[key] = value
         if len(bills) != whole(source.get("requests")):
             raise CostError("snapshot recovery cannot identify every selected request")
-        result.append({"sessionId": source["sessionId"], "file": str(path), "identity": [stat.st_dev, stat.st_ino],
+        result.append({"kind": kind, "sessionId": source["sessionId"], "file": str(path), "identity": [stat.st_dev, stat.st_ino],
                        "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "bills": bills, "later": later})
     if previous and len(previous) != len(result):
         raise CostError("snapshot recovery source set changed")
@@ -320,10 +336,41 @@ def save_recovery(arguments: argparse.Namespace, state: dict, error: str | None 
 def begin_recovery(arguments: argparse.Namespace) -> dict | None:
     """Consume the later observation before reading any report or running the adapter."""
     if not arguments.snapshot_recovery:
-        return None
+        if arguments.run_folder and arguments.cost_json is None and not arguments.until:
+            if (Path(arguments.run_folder) / RECOVERY_FILE).exists():
+                arguments.snapshot_recovery = "retry"
+            else:
+                arguments.until = moment(now()).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        if not arguments.snapshot_recovery:
+            return None
     if not arguments.run_folder:
         raise CostError("snapshot recovery requires a run folder")
     path = Path(arguments.run_folder) / RECOVERY_FILE
+    if arguments.snapshot_recovery == "retry":
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if len(state.get("observations", [])) != 1:
+            raise CostError("snapshot recovery already used its later observation")
+        if not state.get("firstComplete") or state.get("recoveryUnavailable"):
+            raise CostError("snapshot recovery lacks a usable first observation")
+        first = state["observations"][0]
+        old = first["report"]
+        for key in ("since", "until"):
+            value = getattr(arguments, key)
+            if value is not None and not same_end(value, old["window"][key]):
+                raise CostError("snapshot recovery moved the frozen window")
+            setattr(arguments, key, old["window"][key])
+        if arguments.session and arguments.session != old["source"]["sessionId"]:
+            raise CostError("snapshot recovery coordinator changed")
+        if not arguments.no_worker_launches:
+            raise CostError("snapshot recovery requires no intervening worker launches")
+        sources = recovery_sources(old, first["sources"])
+        candidates = [key for key, bill in sources[0]["later"].items()
+                      if key not in first["sources"][0]["later"]
+                      and moment(bill["timestamp"]) > moment(first["observedAt"])]
+        if not candidates:
+            raise CostError("snapshot recovery pending: complete a useful coordinator request without worker launches, then retry the same command")
+        arguments.recovery_request = candidates[0]
+        return state
     if arguments.snapshot_recovery == "first":
         if path.exists():
             raise CostError("snapshot recovery already retained its first observation")
@@ -347,8 +394,10 @@ def recovery_pair(old: dict, report: dict, previous: list[dict]) -> list[dict]:
     sources = recovery_sources(report, previous)
     if not previous or [row["bills"] for row in sources] != [row["bills"] for row in previous]:
         raise CostError("snapshot recovery selected requests changed")
-    for before, after in zip([old["parent"], *old.get("children", []), old["combined"]],
-                             [report["parent"], *report.get("children", []), report["combined"]], strict=True):
+    for index, (before, after) in enumerate(zip([old["parent"], *old.get("children", []), old["combined"]],
+                                               [report["parent"], *report.get("children", []), report["combined"]], strict=True)):
+        if 0 < index < len(sources) and sources[index]["kind"] in ("claude-subagent", "claude-session"):
+            continue
         if any(before.get(key) != after.get(key) for key in ("requests", "pricedCostUsd", "unpricedRequests", "unpricedModels")):
             raise CostError("snapshot recovery request counts or priced dollars changed")
         defect = before.get("coverageDefect") or {}
@@ -750,6 +799,8 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
         report = load_report(arguments)
     except (CostError, OSError, ValueError, KeyError, TypeError) as error:
         if attempt:
+            if arguments.snapshot_recovery == "retry":
+                attempt["observations"].append({"observedAt": now()})
             save_recovery(arguments, attempt, str(error))
         try:
             opening = opening_context(arguments, None)
@@ -759,6 +810,13 @@ def build(arguments: argparse.Namespace) -> tuple[str, str | None, dict[str, Any
             counters["opening_context"] = opening
         return "error", None, counters, str(error)
     try:
+        if arguments.snapshot_recovery == "retry":
+            summaries = [report.get("parent") or {}, *(report.get("children") or [])]
+            if any((summary.get("coverageDefect") or {}).get("cause") == "snapshot-unmatched" for summary in summaries):
+                return "error", None, counters, "snapshot recovery pending: matching snapshots have not completed. Retry after a useful coordinator request without worker launches"
+            attempt["observations"].append({"observedAt": now()})
+            save_recovery(arguments, attempt)
+            arguments.snapshot_recovery = "observe"
         recovery = recovery_observation(arguments, report, attempt)
     except (CostError, OSError, ValueError, KeyError, TypeError) as error:
         if attempt:

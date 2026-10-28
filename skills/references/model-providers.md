@@ -10,11 +10,19 @@ Check the native tool's model and effort parameters and the runner's catalog whe
 
 ## Native children
 
-Use native children when the harness supports the requested combination and the workflow permits that transport. Omit model overrides for the current model. Use explicit overrides only when the provider and tool support them. Match the selected tier to the workflow's role.
+Use native children when the harness supports the requested combination and the workflow permits that transport. Omit model overrides for the current model. Use explicit overrides only when the provider and tool support them. Match the selected model to the workflow's role.
 
 A full-history fork inherits the parent's model and effort when the tool requires inheritance. Never attach overrides to that fork. Use a supported isolated-context mode when an authorized task requires another model. Give it the complete bounded brief.
 
 For Claude Code, select the role's supported model name or ID. Resolve its current build and alias rules through [models.md](models.md).
+
+## Service tier
+
+Preserve requested speed independently from model, reasoning effort, and provider. A workflow's model tiers describe model capability, not service speed. Never select speed from a worker's role. Omission inherits effective defaults. Reasoning effort `ultra` does not select speed `ultrafast`.
+
+Check the active native tool's parameters before selecting transport. Native tools without a service-tier parameter cannot set speed explicitly. Use inherited effective speed only when verified runtime evidence satisfies the explicit request. A global Fast configuration does not change an existing Standard parent's native children. When native inheritance cannot satisfy the request, use the authorized supported dispatch route or report refusal without substitution.
+
+Read [dispatch's service-tier flag](../dispatch/SKILL.md#codex-service-tier) for the supported launch values. Arc owns runtime capability and accepted-tier checks. Preserve the requested tier after refusal, and never retry at another speed or model. Keep the workflow's permissions, ownership, completion route, and spend limits.
 
 ## Codex on Amazon Bedrock
 

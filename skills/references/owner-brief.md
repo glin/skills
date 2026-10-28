@@ -6,6 +6,8 @@ Separate owner requirements, explicitly approved agent proposals, and unapproved
 
 Name the authorized outcome, exclusions, repository baseline, owned paths, checks, return path, and limits. Preserve these requirements when refreshing or narrowing a brief.
 
+Carry requested model, reasoning effort, provider, and speed into every refreshed brief and launch. Apply [service-tier transport rules](model-providers.md#service-tier) when choosing native or dispatched workers.
+
 When a brief tells a worker how to launch a session or run a tool, write the full command line. Use only flags that the installed tool's `--help` lists. A flag copied from a sibling tool, such as `arc start --agent-run` given to `dispatch.py`, stops the worker until the owner answers.
 
 For a waited dispatch, the brief keeps launch and observation separate. Launch in the foreground with `--arc-dispatch --log PATH` and explicit model and effort. Background the printed observation command for your shell with `--wait-launch LAUNCH_ID`. Carry `--read-only` for a review and preserve `ARC_BIN` and `ARC_HOME` across both commands. A pending native identity or observation deadline never authorizes another launch.
@@ -33,17 +35,39 @@ Use the complete raw session ID from accepted launch metadata or scoped listing,
 If Arc cannot confirm or save labels, keep the existing worker.
 Record the pending metadata and report the limitation alongside the verified link or plain-text session identity.
 
+## Coordinator placement
+
+A coordinator runs in the invoking session, or in a reader-owned session that `dispatch` starts with `--owned`. It never runs as a subagent. A coordinator often waits on workers for more than 5 minutes between requests, and a Claude subagent's cache lasts 5 minutes. Each return after a longer gap rebuilds the whole context at the write price. A request such as "launch an agent to run this plan" therefore asks for a reader-owned dispatch, never a subagent. No hookless check lets a subagent detect that it is one, so each coordinator workflow applies this rule at its first step.
+
+A reader-owned session keeps the provider's default cache lifetime, which is 1 hour on a subscription. `dispatch.py` sets 5 minutes only for workflow workers, and Arc sets it only for the sessions it files under Run by agents. One gap of 5 to 60 minutes pays for the higher 1 hour write price. Start the coordinator in one of two ways:
+
+- In a ready Arc window, launch with `--owned` and without `--add-dir`, `--log` or `--cache-ttl`. The owner continues the session in Arc's prompt box. When no Arc window is ready, the same launch starts through `arc run` and keeps the provider default.
+- In a terminal window, add `--attach --cache-ttl 1h`. `--attach` keeps `--add-dir` and `--log`. `--cache-ttl 1h` sets 1 hour whatever the billing mode.
+
+```
+python3 "$SKILLS_DIR/dispatch/dispatch.py" --runner claude --owned --arc-dispatch --model claude-opus-5-5 --effort high \
+  --name <name> --cwd <checkout> --prompt <brief>
+python3 "$SKILLS_DIR/dispatch/dispatch.py" --runner claude --attach --cache-ttl 1h --arc-dispatch --model claude-opus-5-5 --effort high \
+  --name <name> --cwd <checkout> --prompt <brief> --add-dir <plan directory> --log <run folder>/coordinator.log
+```
+
+When `dispatch.py` refuses a reader-owned launch, take one of the two relaunches it prints. Each keeps the provider default. Never drop `--owned`, because the session then runs under Run by agents with the 5 minute cache. The invoking session reports the launch record. The owner follows the coordinator in Arc or in its window.
+
 ## Waits and the cache lifetime
 
-A Claude subagent's prompt cache lasts 5 minutes by default, and so does a Claude session that `dispatch` starts. A request after a longer gap rebuilds the whole context at the cache write price. That write costs 12.5 to 50 times the read price, depending on the model. Current Codex models such as GPT-6.1 Sol cache for a documented 30 minutes, and older models differ. The full price table and the lifetime controls are in `~/.claude/docs/llm-cost-and-caching.md`.
+A Claude subagent's prompt cache lasts 5 minutes by default, and so does a Claude session that `dispatch` starts through `arc run` without `--cache-ttl 1h`. A request after a longer gap rebuilds the whole context at the cache write price. That write costs 12.5 to 50 times the read price, depending on the model. Current Codex models such as GPT-6.1 Sol cache for a documented 30 minutes, and older models differ. The full price table and the lifetime controls are in `~/.claude/docs/llm-cost-and-caching.md`.
 
 Tell every worker that waits for a build, a test run or a measurement which of these rules it follows:
 
 - A worker whose result is a file starts the long job in the background and returns. Use this only when the host notifies the coordinator on exit and the job outlives the worker. The coordinator then launches a fresh worker to read the result.
 - A worker that must wait in its own context ends each wait in under 270 seconds. Its next model request reads the cache and resets the timer, at a small fraction of a rebuild. The 5 minutes run from request to request, so the wait leaves room for the model's own time. The coordinator's rule against polling does not bind this worker, because it cannot return before its result exists.
-- A worker whose wait is one blocking call longer than 270 seconds, with no background form, runs as a dispatched Claude session, not a subagent. Set `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` in the environment of the `dispatch.py` command. One gap of 5 to 60 minutes pays for the higher write price.
+- A worker whose wait is one blocking call longer than 270 seconds, with no background form, runs as a dispatched Claude session, not a subagent. Pass `--cache-ttl 1h` to `dispatch.py`. One gap of 5 to 60 minutes pays for the higher write price.
 
-A coordinator cannot keep a worker's cache alive from outside. A worker blocked inside a tool call reads no message until that call returns. A coordinator also cannot change its own subagents' cache lifetime. Claude Code reads `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` from its own process environment, and a shell command cannot change its parent's environment. The `subagentPromptCacheTtl` setting lives in a settings file that every session on the machine shares.
+Before launch, decide whether you will message this worker again after its cache lifetime. Owner replies and review rounds often take longer. If you will, plan a fresh worker with a short brief for the follow-up. Or dispatch it with `--cache-ttl 1h`, as for a long blocking wait. Before you message a worker idle past its cache lifetime, price the resume. Compare it with a fresh worker and with doing the work yourself, and take the cheapest route.
+
+A native Codex worker sends no progress message to its parent. Its final answer carries its result. Each message returns the coordinator's `wait_agent` call and costs one coordinator request. A worker that is blocked sends one message that names the blocker, and nothing else.
+
+A top-level session that waits hours for its workers follows the `keepalive` skill to decide whether to tick, and a subagent never ticks. A coordinator cannot keep a worker's cache alive from outside. A worker blocked inside a tool call reads no message until that call returns. A coordinator also cannot change its own subagents' cache lifetime. Claude Code reads `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` from its own process environment, and a shell command cannot change its parent's environment. The `subagentPromptCacheTtl` setting lives in a settings file that every session on the machine shares.
 
 ## Measured acceptance
 

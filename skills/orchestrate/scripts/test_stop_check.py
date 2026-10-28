@@ -141,6 +141,91 @@ class StopCheckTests(unittest.TestCase):
         self.assertEqual([row["report"] for row in evidence["observations"]], [first, second])
         self.assertNotEqual(self.recover(second, arguments)[0], 0)
 
+    def test_live_checkpoint_freezes_before_read_and_retry_discovers_later_request(self) -> None:
+        first, second, arguments = self.recovery_fixture()
+        first["window"]["until"] = second["window"]["until"] = "2026-01-01T00:02:00.123Z"
+        del arguments[arguments.index("--until"):arguments.index("--until") + 2]
+        arguments += ["--session", "coordinator"]
+        observed = []
+
+        def adapter(args):
+            observed.append(args.until)
+            return first if len(observed) <= 2 else second
+
+        with patch.object(stop_check, "load_report", side_effect=adapter):
+            with patch.object(stop_check, "now", return_value="2026-01-01T00:02:00.123456Z"):
+                code, lines = self.run_script(None, *arguments)
+            self.assert_verdict(code, lines, "stop: unpriced usage blocks paid work")
+            folder = arguments[arguments.index("--run-folder") + 1]
+            path = os.path.join(folder, stop_check.RECOVERY_FILE)
+            with open(path, "rb") as saved:
+                original = saved.read()
+            retry = [*arguments, "--snapshot-recovery", "retry", "--no-worker-launches"]
+            with patch.object(stop_check, "now", return_value="2026-01-01T00:05:00Z"):
+                for _ in range(2):
+                    code, lines = self.run_script(None, *retry)
+                    self.assertEqual(code, 2, lines)
+                    self.assertIn("pending", lines[0])
+                    with open(path, "rb") as saved:
+                        self.assertEqual(saved.read(), original)
+                self.assertEqual(len(observed), 1)
+                self.append_later_request(first)
+                code, lines = self.run_script(None, *retry)
+                self.assertEqual(code, 2, lines)
+                self.assertIn("pending", lines[0])
+                with open(path, "rb") as saved:
+                    self.assertEqual(saved.read(), original)
+                code, lines = self.run_script(None, *retry)
+                self.assert_verdict(code, lines, "continue")
+                code, lines = self.run_script(None, *retry)
+                self.assertEqual(code, 2, lines)
+                self.assertIn("already used", lines[0])
+            self.assertEqual(observed, [first["window"]["until"]] * 3)
+        with open(path, encoding="utf-8") as saved:
+            state = json.load(saved)
+        self.assertEqual([item["report"] for item in state["observations"]], [first, second])
+
+    def test_retry_refuses_first_report_without_source_witnesses(self) -> None:
+        first, _, arguments = self.recovery_fixture()
+        folder = arguments[arguments.index("--run-folder") + 1]
+        path = os.path.join(folder, stop_check.RECOVERY_FILE)
+        content = json.dumps({"observations": [{"observedAt": "2026-01-01T00:03:00Z", "report": first}]})
+        with open(path, "w", encoding="utf-8") as saved:
+            saved.write(content)
+        self.append_later_request(first)
+        with patch.object(stop_check, "load_report") as loader:
+            code, lines = self.run_script(None, *arguments, "--session", "coordinator",
+                                          "--snapshot-recovery", "retry", "--no-worker-launches")
+        self.assertEqual(code, 2, lines)
+        self.assertIn("lacks a usable first observation", lines[0])
+        loader.assert_not_called()
+        with open(path, encoding="utf-8") as saved:
+            self.assertEqual(saved.read(), content)
+
+    def test_supported_retry_keeps_gaps_prices_and_reserve_refusals(self) -> None:
+        for case in ("gap", "price", "reserve", "launch", "window"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.directory) as directory:
+                original, self.directory = self.directory, directory
+                try:
+                    first, second, arguments = self.recovery_fixture()
+                    if case == "gap":
+                        first["combined"]["coverageDefect"] = {"cause": "compaction-unmatched"}
+                    if case == "price":
+                        first["combined"].update(unpricedRequests=1, unpricedModels=["unknown"])
+                    self.observe_first(first, arguments)
+                    if case == "price":
+                        second["combined"].update(unpricedRequests=1, unpricedModels=["unknown"], costUsd=None)
+                    if case == "reserve":
+                        arguments[arguments.index("--post-cutoff-reserve") + 1] = "1"
+                    if case == "window":
+                        arguments[arguments.index("--until") + 1] = "2026-01-01T00:01:30Z"
+                    flags = [] if case == "launch" else ["--no-worker-launches"]
+                    with patch.object(stop_check, "now", return_value="2026-01-01T00:05:00Z"):
+                        code, lines = self.run_script(second, *arguments, "--snapshot-recovery", "retry", *flags)
+                    self.assertEqual(code, 2, lines)
+                finally:
+                    self.directory = original
+
     def test_normal_cost_check_retains_the_actual_first_report_for_one_later_observation(self) -> None:
         first, second, arguments = self.recovery_fixture()
         with patch.object(stop_check, "load_report", side_effect=[first, second]) as loader:
@@ -482,6 +567,147 @@ class StopCheckTests(unittest.TestCase):
         code, lines = self.recover(second, arguments)
         self.assert_verdict(code, lines, "continue")
 
+    def mixed_recovery_fixture(self, kind: str = "claude-session") -> tuple[dict, dict, list[str]]:
+        first, second, arguments = self.recovery_fixture()
+        message = {"type": "assistant", "timestamp": "2026-01-01T00:01:30Z", "sessionId": "reviewer",
+                   "message": {"id": "claude-request", "model": "claude-sonnet-5-20260810",
+                               "usage": {"input_tokens": 100, "output_tokens": 50,
+                                         "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}
+        child = dict(kind=kind, sessionId="reviewer", file=self.write("claude.jsonl", json.dumps(message) + "\n"),
+                     requests=1, pricedRequests=1, unpricedRequests=0, pricedCostUsd=1, costUsd=1)
+        for fixture in (first, second):
+            fixture["children"] = [dict(child)]
+            fixture["combined"].update(requests=2, pricedCostUsd=6)
+        second["combined"]["costUsd"] = 6
+        return first, second, arguments
+
+    def test_mixed_claude_child_allows_delayed_codex_snapshot_admission(self) -> None:
+        for kind in ("claude-session", "claude-subagent"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                original, self.directory = self.directory, folder
+                try:
+                    first, second, arguments = self.mixed_recovery_fixture(kind)
+                    with patch.object(stop_check, "now", return_value="2026-01-01T00:03:00Z"):
+                        code, lines = self.run_script(first, *arguments)
+                    self.assert_verdict(code, lines, "stop: unpriced usage blocks paid work")
+                    with open(first["source"]["file"], "a", encoding="utf-8") as source:
+                        source.write(json.dumps({"type": "event_msg", "timestamp": "2026-01-01T00:03:01Z",
+                                                 "payload": {"type": "token_count", "info": {
+                                                     "last_token_usage": {"total_tokens": 10},
+                                                     "total_token_usage": {"total_tokens": 10}}}}) + "\n")
+                    self.append_later_request(first)
+                    code, lines = self.recover(second, arguments)
+                    self.assert_verdict(code, lines, "continue")
+                    self.assertIn("priced spend: 6.00 USD (this run 6.00 USD, of it dispatched 0.00 USD, earlier runs 0.00 USD)", lines)
+                    with open(os.path.join(folder, "recovery", stop_check.RECOVERY_FILE), encoding="utf-8") as saved:
+                        evidence = json.load(saved)
+                    self.assertEqual([row["report"] for row in evidence["observations"]], [first, second])
+                    self.assertEqual(evidence["observations"][0]["sources"][1]["summary"], first["children"][0])
+                    self.assertNotEqual(self.recover(second, arguments)[0], 0)
+                finally:
+                    self.directory = original
+
+    def test_mixed_recovery_refuses_changed_or_incomplete_claude_children(self) -> None:
+        cases = ("append", "rewrite", "replacement", "identity", "file", "kind", "count", "priced count", "dollars",
+                 "usage", "model", "coverage", "defect", "inexact", "unpriced", "missing price", "summary",
+                 "omitted child", "missing snapshot", "build", "reserve")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                original, self.directory = self.directory, folder
+                try:
+                    first, second, arguments = self.mixed_recovery_fixture()
+                    self.observe_first(first, arguments)
+                    child = second["children"][0]
+                    path = child["file"]
+                    if case == "append":
+                        with open(path, "a", encoding="utf-8") as source:
+                            source.write("{}\n")
+                    elif case == "rewrite":
+                        with open(path, "rb+") as source:
+                            source.write(b" ")
+                    elif case == "replacement":
+                        os.rename(path, path + ".old")
+                        with open(path + ".old", "rb") as source, open(path, "wb") as replacement:
+                            replacement.write(source.read())
+                    elif case == "identity":
+                        child["sessionId"] = "other"
+                    elif case == "file":
+                        with open(path, encoding="utf-8") as source:
+                            child["file"] = self.write("other.jsonl", source.read())
+                    elif case == "kind":
+                        child["kind"] = "claude-subagent"
+                    elif case == "count":
+                        child.update(requests=2, pricedRequests=2)
+                    elif case == "priced count":
+                        child["pricedRequests"] = 0
+                    elif case == "dollars":
+                        child.update(costUsd=2, pricedCostUsd=2)
+                    elif case == "usage":
+                        child["unpricedRequests"] = 1
+                    elif case == "model":
+                        child["unpricedModels"] = ["unknown"]
+                    elif case == "coverage":
+                        child["coverage"] = "recorded-gaps"
+                    elif case == "defect":
+                        child["coverageDefect"] = {"cause": "snapshot-unmatched"}
+                    elif case == "inexact":
+                        child["requestCountExact"] = False
+                    elif case == "unpriced":
+                        child["costUsd"] = None
+                    elif case == "missing price":
+                        child.pop("costUsd")
+                    elif case == "summary":
+                        child["outputTokens"] = 999
+                    elif case == "omitted child":
+                        second["children"] = []
+                    elif case == "missing snapshot":
+                        second = first
+                    elif case == "build":
+                        second["buildCommit"] = "b" * 40
+                    elif case == "reserve":
+                        arguments[arguments.index("--post-cutoff-reserve") + 1] = "4"
+                    code, lines = self.recover(second, arguments)
+                    self.assertEqual(code, 2, lines)
+                    self.assertIn("snapshot recovery refused", lines[0])
+                finally:
+                    self.directory = original
+
+    def test_mixed_recovery_requires_complete_claude_children_at_first_observation(self) -> None:
+        for case in ("unknown provider", "unidentified", "inexact", "unpriced", "missing price", "unknown model",
+                     "coverage gap", "coverage defect", "priced count", "negative price", "claude parent"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.directory) as folder:
+                original, self.directory = self.directory, folder
+                try:
+                    first, _, arguments = self.mixed_recovery_fixture()
+                    child = first["children"][0]
+                    if case == "unknown provider":
+                        child["kind"] = "unknown"
+                    elif case == "unidentified":
+                        child.pop("sessionId")
+                    elif case == "inexact":
+                        child["requestCountExact"] = False
+                    elif case == "unpriced":
+                        child["costUsd"] = None
+                    elif case == "missing price":
+                        child.pop("pricedCostUsd")
+                    elif case == "unknown model":
+                        child["unpricedModels"] = ["unknown"]
+                    elif case == "coverage gap":
+                        child["coverage"] = "recorded-gaps"
+                    elif case == "coverage defect":
+                        child["coverageDefect"] = {"cause": "compaction-unmatched"}
+                    elif case == "priced count":
+                        child["pricedRequests"] = 0
+                    elif case == "negative price":
+                        child.update(costUsd=-1, pricedCostUsd=-1)
+                    elif case == "claude parent":
+                        first["source"].update(kind="claude", file=child["file"], sessionId=child["sessionId"])
+                    code, lines = self.run_script(first, *arguments, "--snapshot-recovery", "first")
+                    self.assertEqual(code, 2, lines)
+                    self.assertIn("snapshot recovery refused", lines[0])
+                finally:
+                    self.directory = original
+
     def test_continues_at_51_requests_and_70000_tokens_under_the_ceiling(self) -> None:
         code, lines = self.run_script(
             report(requests=51, context_first=30000, context_max=100000, priced=12.0),
@@ -490,6 +716,26 @@ class StopCheckTests(unittest.TestCase):
         self.assert_verdict(code, lines, "continue")
         self.assertIn("requests: 51", lines)
         self.assertIn("context growth: 70,000 tokens above opening 30,000 tokens", lines)
+
+    def test_accepts_arc_cost_schema_versions_2_and_3_with_the_same_verdict(self) -> None:
+        outputs = []
+        for version in (2, 3):
+            with self.subTest(schemaVersion=version):
+                fixture = report(requests=51, priced=12.0)
+                fixture["schemaVersion"] = version
+                code, lines = self.run_script(fixture, "--ceiling", "20", "--opening-context", "30000")
+                self.assert_verdict(code, lines, "continue")
+                outputs.append(lines)
+        self.assertEqual(outputs[0], outputs[1])
+
+    def test_rejects_other_arc_cost_schema_versions(self) -> None:
+        for version in (1, 4, 999):
+            with self.subTest(schemaVersion=version):
+                fixture = report()
+                fixture["schemaVersion"] = version
+                code, lines = self.run_script(fixture, "--ceiling", "20")
+                self.assertEqual(code, 2, lines)
+                self.assertIn("schema version 2 or 3", lines[0])
 
     def test_stops_at_twice_the_ceiling(self) -> None:
         code, lines = self.run_script(report(priced=40.0), "--ceiling", "20")
