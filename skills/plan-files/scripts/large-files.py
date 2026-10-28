@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """List the files in a plan folder that are too large to keep.
 
-  large-files.py <folder>... [--limit-mb 2]
+  large-files.py <folder>... [--limit-mb 2] [--folder-limit-mb 5]
 
 Prints one line per file above the limit, largest first: the size in MB, a tab, and the
-path. The walk skips `.git` and never enters or counts a symbolic link or a Windows
+path. A folder whose files together exceed the folder limit gets one more line: its total
+in MB, a tab, the folder, a tab, and `folder total`. The walk skips `.git` and never enters or counts a symbolic link or a Windows
 junction, because the files behind a link are not plan content. A plans repository that
 tracks only Markdown never shows these files in `git status`, so this list is the only place
 they appear.
 
-Exit status: 0 when no file is above the limit, 1 when at least one is, 2 for a usage error
+Exit status: 0 when no file or folder is above its limit, 1 when one is, 2 for a usage error
 or an entry the walk cannot read.
 """
 
@@ -32,9 +33,13 @@ def is_link(info: os.stat_result) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_reparse_tag", 0) & NAME_SURROGATE)
 
 
-def large_files(folder: str, limit: int) -> list[tuple[int, str]]:
-    """Return the files above limit under folder. Raise OSError for an entry it cannot read."""
+def large_files(folder: str, limit: int) -> tuple[list[tuple[int, str]], int]:
+    """Return the files above limit under folder and the size of all its files.
+
+    Raise OSError for an entry it cannot read.
+    """
     found: list[tuple[int, str]] = []
+    total = 0
     pending = [folder]
     while pending:
         directory = pending.pop()
@@ -46,15 +51,18 @@ def large_files(folder: str, limit: int) -> list[tuple[int, str]]:
             if stat.S_ISDIR(info.st_mode):
                 if name != ".git":
                     pending.append(path)
-            elif info.st_size > limit:
-                found.append((info.st_size, path))
-    return found
+            else:
+                total += info.st_size
+                if info.st_size > limit:
+                    found.append((info.st_size, path))
+    return found, total
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="List files in a plan folder above a size limit.")
     parser.add_argument("folders", nargs="*", help="Plan folders to check.")
-    parser.add_argument("--limit-mb", type=float, default=2.0, help="The size limit in MB.")
+    parser.add_argument("--limit-mb", type=float, default=2.0, help="The size limit for one file in MB.")
+    parser.add_argument("--folder-limit-mb", type=float, default=5.0, help="The size limit for each folder's files together in MB.")
     parser.add_argument("--manifest", help="Explicitly adopted disposition manifest. Enables the shared closure check.")
     parser.add_argument("--plan", help="Plan containing the generated Runtime resources view.")
     parser.add_argument("--resource-view", help="Standalone generated resource view for a run without a plan.")
@@ -75,18 +83,24 @@ def main(argv: list[str] | None = None) -> int:
     if not arguments.folders or arguments.plan or arguments.resource_view or arguments.owner:
         parser.error("positional folders are required without --manifest")
     found: list[tuple[int, str]] = []
+    totals: list[tuple[int, str]] = []
     for folder in arguments.folders:
         if not os.path.isdir(folder):
             print(f"large-files: {folder} is not a folder", file=sys.stderr)
             return 2
         try:
-            found.extend(large_files(folder, int(arguments.limit_mb * MB)))
+            files, total = large_files(folder, int(arguments.limit_mb * MB))
+            found.extend(files)
+            if total > arguments.folder_limit_mb * MB:
+                totals.append((total, folder))
         except OSError as error:
             print(f"large-files: cannot read {error.filename}: {error.strerror}", file=sys.stderr)
             return 2
     for size, path in sorted(found, reverse=True):
         print(f"{size / MB:.1f}\t{path}")
-    return 1 if found else 0
+    for size, folder in totals:
+        print(f"{size / MB:.1f}\t{folder}\tfolder total")
+    return 1 if found or totals else 0
 
 
 if __name__ == "__main__":

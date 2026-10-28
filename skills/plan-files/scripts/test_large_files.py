@@ -62,6 +62,13 @@ class LargeFilesTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
 
+    def test_lists_a_folder_whose_small_files_add_up_past_five_megabytes(self) -> None:
+        for index in range(4):
+            self.write(os.path.join("runs", f"stream-{index}.jsonl"), int(1.5 * MB))
+        result = self.run_script()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [f"6.0\t{self.folder}\tfolder total"])
+
     def test_never_enters_a_link_or_junction(self) -> None:
         outside = os.path.join(self.root, "dependencies")
         self.write("bundle.js", 3 * MB, base=outside)

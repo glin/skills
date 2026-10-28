@@ -103,6 +103,8 @@ Keep the owner's relevant message excerpts, source references, later corrections
 
 A plan or reviewer suggestion alone grants no authority for a visible control, dialog, panel, or interaction. Reviewers compare every proposed surface with the owner's request. If an inferred requirement needs an unauthorized addition, pause that addition and request approval. Continue independent approved work.
 
+A plan can find a defect outside its scope that shows the owner a wrong value or state in the product. The agent must not decline that defect alone. Declining means recording a known limit or a `Won't fix` entry for it. Before declining, record the owner's approval and its source beside the entry. The code never supplies this approval. The risk often rests on another part's timing, and that timing can change after the plan closes. Without approval, keep the plan `In progress` and ask in the closing message with a Waiting on you item that opens with **Approve or reject**.
+
 ## Rules
 
 - **Write the file.** A plan presented only in chat does not exist. This is the whole point of the convention.
@@ -146,7 +148,7 @@ Do not set the plan to `Implemented`, `Closed`, or `Archived` while a resource r
 
 For explicitly adopted runs, follow [references/closure.md](references/closure.md) at resource settlement. Check the authoritative disposition manifest and generated Runtime resources view with `scripts/large-files.py --manifest <manifest> --plan <plan>`. For a run without a plan, replace `--plan <plan>` with `--resource-view <view>` as the reference describes. Add `--owner <child>` for an independently completed child. The shared checker must pass before claiming completion. Keep legacy table authority and the positional scan below until explicit migration.
 
-Before a task that wrote into a plan folder ends, run [scripts/large-files.py](scripts/large-files.py) under `python3` with that folder as its argument. It lists every file over 2 MB and exits 1 when it lists any. It never enters a symbolic link or a junction. It exits 2 when it cannot read a folder, and then the check has not run. Handle each file under step 1 of Archiving a plan: summarize its finding in the plan, then pack or delete it as [references/archive-cleanup.md](references/archive-cleanup.md) describes. A plans repository that tracks only Markdown never shows these files in `git status`, so the folder grows unseen without this check.
+Before a task that wrote into a plan folder ends, run [scripts/large-files.py](scripts/large-files.py) under `python3` with that folder as its argument. It lists every file over 2 MB, and the folder itself when its files together pass 5 MB. It exits 1 when it lists anything. It never enters a symbolic link or a junction. It exits 2 when it cannot read a folder, and then the check has not run. Handle each file under step 1 of Archiving a plan: summarize its finding in the plan, then pack or delete it as [references/archive-cleanup.md](references/archive-cleanup.md) describes. A line that ends in `folder total` means the folder's files together pass 5 MB. Pack or delete files the same way until the total is under 5 MB, without waiting for archival. If the plan states why the contents must stay unpacked, keep them and accept exit 1. A plans repository that tracks only Markdown never shows these files in `git status`, so the folder grows unseen without this check.
 
 ## Retrospectives
 
@@ -175,6 +177,9 @@ Archive once a plan has no open actionable work, meaning its `Status:` is `Imple
 
    `--agent` takes the `Agent` trailer value, and `--session` takes the session UUID. `--verified-quiet` records the executor's check for conflicting writers. `--owner-confirmed-quiet` remains valid when the owner supplied that confirmation. Neither flag bypasses staged paths, recent foreign commits at affected paths, open task runs in the moved plan, or unreadable run metadata. An agent command naming an absolute affected path also blocks the move. Resolve a refusal, then run the dry run again. The same checks and flags apply to `--rollback`. A recently changed file in a run folder never blocks the move. The move makes two commits: the first moves the folder, and the second rewrites every link to it. Where no repository tracks `.claude/plans/`, move the folder with a plain `mv` instead, and fix its links by hand.
 3. Read the dry run's list of unresolved references and fix each one by hand.
+
+To archive many plans, write one `<from> <to>` pair per line in a file. Pass `--moves-file <file>` in place of the two paths. Each line gets the checks of step 2, and `--apply` takes the same identity flags. One run moves the whole batch in the same two commits.
+When the plans root holds a `CLEANUP.md`, follow it to clean up the whole folder. It replaces the packing classes in [references/archive-cleanup.md](references/archive-cleanup.md) for that repository.
 
 Never delete plan history. Archiving is a move, and `git mv` reverses it if the plan reopens.
 

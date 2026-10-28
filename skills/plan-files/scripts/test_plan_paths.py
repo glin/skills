@@ -576,6 +576,155 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(git(root, "log", "-1", "--format=%s"), "docs(plans): repoint paths at archive/2026/10/2026-10-02-gamma\n")
 
 
+class BatchMoveTests(unittest.TestCase):
+    """Move alpha and gamma into archive/ with one moves file."""
+
+    cleanups: list = []
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.template = Fixture(make_temp(cls)).root
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        for cleanup in cls.cleanups:
+            cleanup()
+
+    def setUp(self) -> None:
+        self.root = copy_repository(self.template, make_temp(self))
+        self.processes = mock.patch.object(plan_paths, "list_processes", lambda: [])
+        self.processes.start()
+        self.addCleanup(self.processes.stop)
+
+    def moves_file(self, text: str) -> str:
+        path = os.path.join(make_temp(self), "moves.txt")
+        write(os.path.dirname(path), "moves.txt", text)
+        return path
+
+    def batch_args(self, moves_file: str, mode: str = "--apply") -> list[str]:
+        return ["move", self.root, "--moves-file", moves_file, mode, "--agent", AGENT, "--session", SESSION, "--owner-confirmed-quiet"]
+
+    def test_apply_archives_both_plans_in_two_commits_and_repoints_links_to_both(self) -> None:
+        moves = self.moves_file(
+            "# archive these\n\n2026-09-05-alpha archive/2026-09-05-alpha\n2026-10-02-gamma   archive/2026-10-02-gamma\n"
+        )
+        count = int(git(self.root, "rev-list", "--count", "HEAD"))
+        code, out = run_main(*self.batch_args(moves))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(int(git(self.root, "rev-list", "--count", "HEAD")), count + 2)
+        self.assertEqual(
+            git(self.root, "log", "-2", "--format=%s"),
+            "docs(plans): repoint paths at 2 archived plan folders\nrefactor(plans): archive 2 plan folders\n",
+        )
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "archive/2026-09-05-alpha/plan.md")))
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "archive/2026-10-02-gamma/plan.md")))
+        self.assertIn("[Alpha](archive/2026-09-05-alpha/plan.md)", read(self.root, "ROADMAP.md"))
+        self.assertIn("[gamma](../archive/2026-10-02-gamma/plan.md)", read(self.root, "2026-09-20-beta/draft.md"))
+        self.assertIn("[alpha](../archive/2026-09-05-alpha/plan.md)", read(self.root, "2026-10-03-delta/notes.md"))
+
+    def test_a_target_outside_archive_uses_the_general_subjects(self) -> None:
+        moves = self.moves_file("2026-09-05-alpha archive/2026-09-05-alpha\n2026-10-02-gamma shelf/2026-10-02-gamma\n")
+        code, out = run_main(*self.batch_args(moves))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(
+            git(self.root, "log", "-2", "--format=%s"),
+            "docs(plans): repoint paths at 2 moved items\nrefactor(plans): move 2 items\n",
+        )
+
+    def test_rollback_restores_both_plans(self) -> None:
+        moves = self.moves_file("2026-09-05-alpha archive/2026-09-05-alpha\n2026-10-02-gamma archive/2026-10-02-gamma\n")
+        before = snapshot(self.root)
+        self.assertEqual(run_main(*self.batch_args(moves))[0], 0)
+        code, out = run_main(*self.batch_args(moves, "--rollback"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), "revert(plans): restore 2 archived plan folders\n")
+
+    def test_a_missing_source_refuses_the_whole_batch(self) -> None:
+        moves = self.moves_file("2026-09-05-alpha archive/2026-09-05-alpha\n2026-12-31-missing archive/2026-12-31-missing\n")
+        head = git(self.root, "rev-parse", "HEAD")
+        before = snapshot(self.root)
+        code, out = run_main(*self.batch_args(moves))
+        self.assertEqual(code, 1, out)
+        self.assertIn("2026-12-31-missing does not exist", out)
+        self.assertEqual(git(self.root, "rev-parse", "HEAD"), head)
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_a_line_without_two_fields_names_its_line_number(self) -> None:
+        moves = self.moves_file("2026-09-05-alpha archive/2026-09-05-alpha\n2026-10-02-gamma\n")
+        before = snapshot(self.root)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = plan_paths.main(self.batch_args(moves), out=io.StringIO())
+        self.assertEqual(code, 2)
+        self.assertIn("line 2", err.getvalue())
+        self.assertEqual(snapshot(self.root), before)
+
+    def assert_batch_refused_untouched(self, lines: str, expected: str) -> None:
+        moves = self.moves_file(lines)
+        head = git(self.root, "rev-parse", "HEAD")
+        before = snapshot(self.root)
+        code, out = run_main(*self.batch_args(moves))
+        self.assertEqual(code, 1, out)
+        self.assertIn(expected, out)
+        self.assertEqual(git(self.root, "rev-parse", "HEAD"), head)
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_a_source_inside_an_earlier_source_refuses_the_whole_batch(self) -> None:
+        self.assert_batch_refused_untouched(
+            "2026-09-05-alpha archive/2026-09-05-alpha\n2026-09-05-alpha/notes.md archive/notes.md\n",
+            "2026-09-05-alpha and 2026-09-05-alpha/notes.md overlap",
+        )
+
+    def test_a_source_that_holds_an_earlier_source_refuses_the_whole_batch(self) -> None:
+        self.assert_batch_refused_untouched(
+            "2026-09-05-alpha/notes.md archive/notes.md\n2026-09-05-alpha archive/2026-09-05-alpha\n",
+            "2026-09-05-alpha/notes.md and 2026-09-05-alpha overlap",
+        )
+
+    def test_the_journal_key_matches_the_moves_applied_when_the_file_changes_mid_run(self) -> None:
+        moves = self.moves_file("2026-09-05-alpha archive/2026-09-05-alpha\n")
+        original = plan_paths.single_move
+        rewritten = []
+
+        def rewriting(*args):
+            if not rewritten:
+                rewritten.append(True)
+                with open(moves, "w", encoding="utf-8") as file:
+                    file.write("2026-10-02-gamma archive/2026-10-02-gamma\n")
+            return original(*args)
+
+        with mock.patch.object(plan_paths, "single_move", rewriting):
+            code, out = run_main(*self.batch_args(moves))
+        self.assertEqual(code, 0, out)
+        self.assertTrue(rewritten)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "archive/2026-09-05-alpha/plan.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "archive/2026-10-02-gamma")))
+        state = plan_paths.Journal(plan_paths.Repository(self.root)).load()
+        self.assertEqual(state["key"], {"moves": [["2026-09-05-alpha", "archive/2026-09-05-alpha"]]})
+        self.assertEqual([[old, new] for old, new, _ in state["moves"]], state["key"]["moves"])
+
+    def test_positional_paths_and_a_moves_file_together_are_an_error(self) -> None:
+        moves = self.moves_file("2026-09-05-alpha archive/2026-09-05-alpha\n")
+        before = snapshot(self.root)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = plan_paths.main(
+                ["move", self.root, "2026-10-02-gamma", "archive/2026-10-02-gamma", "--moves-file", moves, "--dry-run"],
+                out=io.StringIO(),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("not both", err.getvalue())
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_neither_positional_paths_nor_a_moves_file_is_an_error(self) -> None:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = plan_paths.main(["move", self.root, "2026-10-02-gamma", "--dry-run"], out=io.StringIO())
+        self.assertEqual(code, 2)
+        self.assertIn("--moves-file", err.getvalue())
+
+
 class CollisionTests(unittest.TestCase):
     def test_a_folder_and_a_file_with_one_slug_refuse_before_any_commit(self) -> None:
         root = os.path.join(make_temp(self), "plans")

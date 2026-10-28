@@ -1486,6 +1486,20 @@ def message(state: dict, subject: str, body: str, agent: str, session: str) -> b
 
 
 def subjects(state: dict) -> tuple[str, str, str]:
+    if state["command"] == "move" and "moves" in state["key"]:
+        pairs = state["key"]["moves"]
+        count = len(pairs)
+        if all(target.startswith("archive/") for _, target in pairs):
+            return (
+                f"refactor(plans): archive {count} plan folders",
+                f"docs(plans): repoint paths at {count} archived plan folders",
+                f"revert(plans): restore {count} archived plan folders",
+            )
+        return (
+            f"refactor(plans): move {count} items",
+            f"docs(plans): repoint paths at {count} moved items",
+            f"revert(plans): move {count} items back",
+        )
     if state["command"] == "move":
         source, target = state["key"]["from"], state["key"]["to"]
         return (
@@ -1836,10 +1850,71 @@ def clean_globs(globs: list[str] | None) -> list[str]:
     return list(dict.fromkeys(glob.replace("\\", "/") for glob in globs or []))
 
 
+def read_moves_file(path: str) -> list[tuple[str, str]]:
+    """Return the from and to paths of a moves file: one pair per line, blank lines and # lines skipped."""
+    try:
+        with open(path, encoding="utf-8") as file:
+            lines = file.read().splitlines()
+    except OSError as error:
+        raise Stop(f"cannot read the moves file {path}: {error.strerror or error}") from error
+    pairs = []
+    for number, line in enumerate(lines, 1):
+        fields = line.split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        if len(fields) != 2:
+            raise Stop(f"{path} line {number} must hold a from path and a to path separated by whitespace")
+        pairs.append((fields[0], fields[1]))
+    if not pairs:
+        raise Stop(f"{path} lists no moves")
+    return pairs
+
+
+def check_move_form(args) -> None:
+    """Allow either both positional paths or --moves-file alone."""
+    if args.moves_file is None:
+        if args.source is None or args.target is None:
+            raise Stop("move needs a from path and a to path, or --moves-file")
+    elif args.source is not None or args.target is not None:
+        raise Stop("move takes either a from path and a to path, or --moves-file, not both")
+
+
+def load_moves(args) -> None:
+    """Read the moves file once and keep its cleaned pairs on args, so the journal key and the moves come from one read."""
+    args.move_pairs = None
+    if args.moves_file is not None:
+        args.move_pairs = [(clean_relative(old), clean_relative(new)) for old, new in read_moves_file(args.moves_file)]
+
+
 def command_key(args) -> dict:
+    if args.command == "move" and args.moves_file is not None:
+        return {"moves": [[old, new] for old, new in args.move_pairs]}
     if args.command == "move":
         return {"from": clean_relative(args.source), "to": clean_relative(args.target)}
     return {"scope": args.scope}
+
+
+def path_key(repo: Repository):
+    """Return the function that maps a path to the form the platform compares: folded on Windows."""
+    return (lambda path: path.casefold()) if repo.fold else (lambda path: path)
+
+
+def within(path: str, base: str) -> bool:
+    return path == base or path.startswith(base + "/")
+
+
+def overlapping_sources(repo: Repository, moves: list[tuple[str, str, str]]) -> list[str]:
+    """Return a problem for each pair of batch moves whose sources are equal or nested.
+
+    The disk renames the outer source with its contents, so the inner source no longer exists where the mapping puts it.
+    """
+    key = path_key(repo)
+    problems = []
+    for number, (old, _, _) in enumerate(moves):
+        for other_old, _, _ in moves[number + 1 :]:
+            if within(key(old), key(other_old)) or within(key(other_old), key(old)):
+                problems.append(f"{old} and {other_old} overlap, so one move would carry the other's source along: list only the outer one")
+    return problems
 
 
 def collisions(repo: Repository, tree, moves: list[tuple[str, str, str]]) -> list[str]:
@@ -1848,12 +1923,8 @@ def collisions(repo: Repository, tree, moves: list[tuple[str, str, str]]) -> lis
     Two items meet when one lands on or inside the other's new path, or inside an item that moves. Every
     tracked path, mapped through the moves, must stay distinct too. Windows compares paths without letter case.
     """
-    key = (lambda path: path.casefold()) if repo.fold else (lambda path: path)
+    key = path_key(repo)
     problems = []
-
-    def within(path: str, base: str) -> bool:
-        return path == base or path.startswith(base + "/")
-
     olds = {}
     for old, _, _ in moves:
         if old.casefold() in olds:
@@ -1878,7 +1949,14 @@ def collisions(repo: Repository, tree, moves: list[tuple[str, str, str]]) -> lis
 
 
 def planned_moves(repo: Repository, tree, args) -> tuple[list[tuple[str, str, str]], list[str]]:
-    if args.command == "move":
+    if args.command == "move" and args.moves_file is not None:
+        moves, problems = [], []
+        for old, new in args.move_pairs:
+            found, issues = single_move(repo, tree, old, new)
+            moves += found
+            problems += issues
+        problems += overlapping_sources(repo, moves)
+    elif args.command == "move":
         moves, problems = single_move(repo, tree, args.source, args.target)
     else:
         moves, problems = inventory(repo, tree, args.scope)
@@ -2172,10 +2250,15 @@ def parser() -> argparse.ArgumentParser:
     identity(plan)
     exclusions(plan)
 
-    move = commands.add_parser("move", help="Move one folder or file, such as a plan into archive/.")
+    move = commands.add_parser("move", help="Move one folder or file, such as a plan into archive/, or a batch from --moves-file.")
     move.add_argument("plans_root")
-    move.add_argument("source", metavar="from")
-    move.add_argument("target", metavar="to")
+    move.add_argument("source", metavar="from", nargs="?")
+    move.add_argument("target", metavar="to", nargs="?")
+    move.add_argument(
+        "--moves-file",
+        metavar="PATH",
+        help="Move a batch in one run. Each line holds a from path and a to path separated by whitespace. Blank lines and lines that start with # are skipped.",
+    )
     modes = move.add_mutually_exclusive_group(required=True)
     for flag in ("--dry-run", "--apply", "--rollback"):
         modes.add_argument(flag, action="store_true")
@@ -2193,6 +2276,9 @@ def main(argv: list[str] | None = None, out=None) -> int:
     started = time.perf_counter()
     args = parser().parse_args(argv)
     try:
+        if args.command == "move":
+            check_move_form(args)
+            load_moves(args)
         repo = Repository(args.plans_root)
         if args.command == "resolve":
             found = resolve(repo, args.path)
