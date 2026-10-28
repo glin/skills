@@ -31,8 +31,16 @@ line, this script reads any of these shapes instead, using the marker for
 severity and confidence and the nearest backtick-wrapped `file:line`
 citation after it for file and line. A plain label, `Severity: WARNING.
 Confidence: high.` on one line or as two list items, takes the nearest citation
-before it instead, and a bare `File: path:line` field counts as a citation. A
-report with none of these formats yields an empty list of findings.
+before it instead, and a bare `File: path:line` field counts as a citation.
+
+Reviewers invent new layouts faster than this script can learn them, such as
+`### 1. WARNING (confidence: high): title` or a severity folded into a
+sentence. So a report with none of the shapes above falls back to checking
+every quote that carries a citation, whatever the layout around it. Each such
+quote becomes one record with no severity, confidence or description, since
+no finding marker names them. When a quote carries several citations, the
+record keeps the one whose file holds the quote. A quote with no citation is
+skipped. A report with no finding and no cited quote yields an empty list.
 
 ## Finding the quote for each finding
 
@@ -148,7 +156,7 @@ read.
   0  every finding is present or present-elsewhere, and at least one exists
   1  at least one finding is absent, file-missing, or unparseable
   2  a usage or input error (bad --root, unreadable --report)
-  3  the report has no findings to check
+  3  the report has no finding and no cited quote to check
 """
 
 from __future__ import annotations
@@ -603,14 +611,45 @@ def unlink_citations(text: str) -> str:
     return LINK_CITATION.sub(backtick, text)
 
 
+VERDICT_RANK = ("present", "present-elsewhere", "unparseable", "absent", "file-missing")
+
+
+def evaluate_cited_quotes(
+    root: str,
+    candidates: list[tuple[list[tuple[str, int, int]], str, bool]],
+    window: int,
+) -> list[tuple[dict, str, str]]:
+    """The layout-free fallback: one finding per quote that carries a citation,
+    evaluated against each of its citations, keeping the best verdict."""
+    results = []
+    for cites, quote, trailing in candidates:
+        best = None
+        for path, line1, line2 in cites:
+            finding = {
+                "parse_error": None, "severity": None, "confidence": None,
+                "file": path, "line1": line1, "line2": line2,
+                "description": None, "quote": quote, "quote_trailing": trailing,
+            }
+            verdict, detail = evaluate(root, finding, window)
+            if best is None or VERDICT_RANK.index(verdict) < VERDICT_RANK.index(best[1]):
+                best = (finding, verdict, detail)
+        if best:
+            best[0]["id"] = len(results) + 1
+            results.append(best)
+    return results
+
+
 def check_report(text: str, root: str, window: int) -> list[dict]:
     text = FILE_LABEL.sub(lambda m: f"{m.group(1)}`{m.group(2)}`", unlink_citations(text))
     findings, own_line_spans = parse_findings(text)
     candidates = quote_candidates(text, own_line_spans)
-    attach_quotes(findings, candidates)
+    if findings:
+        attach_quotes(findings, candidates)
+        evaluated = [(f, *evaluate(root, f, window)) for f in findings]
+    else:
+        evaluated = evaluate_cited_quotes(root, candidates, window)
     records = []
-    for finding in findings:
-        verdict, detail = evaluate(root, finding, window)
+    for finding, verdict, detail in evaluated:
         records.append({
             "id": finding["id"],
             "severity": finding.get("severity"),

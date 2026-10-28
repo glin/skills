@@ -501,6 +501,41 @@ class QuoteCheckTest(unittest.TestCase):
     def test_report_with_no_finding_lines_yields_no_records(self) -> None:
         self.assertEqual(self.check("No issues found. Verdict: APPROVE.\n"), [])
 
+    def test_unknown_heading_layout_checks_each_cited_quote(self) -> None:
+        report = (
+            "### 1. WARNING (confidence: high): the helper trims\n\n"
+            "At `src/app.py:10`:\n\n```py\n    return value.strip()\n```\n\n"
+            "### 2. INFO (confidence: low): a made-up line\n\n"
+            "At `src/app.py:16`:\n\n```py\n    return a - b\n```\n"
+        )
+        records = self.check(report)
+        self.assertEqual([r["verdict"] for r in records], ["present", "absent"])
+        self.assertEqual(records[0]["file"], "src/app.py")
+        self.assertIsNone(records[0]["severity"])
+
+    def test_severity_in_prose_with_link_citation_checks_the_quote(self) -> None:
+        target = os.path.join(self.root, "src", "app.py")
+        report = (
+            f"The sum in [src/app.py:16]({target}:16) is wrong (WARNING, high confidence). "
+            "It contains:\n\n```py\n    return a + b\n```\n"
+        )
+        records = self.check(report)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["verdict"], "present")
+
+    def test_cited_quote_keeps_the_citation_whose_file_holds_it(self) -> None:
+        report = (
+            "Compare `docs/notes.md:1` with `nested/deep/util.py:2`:\n\n"
+            "```py\n    return 1\n```\n"
+        )
+        records = self.check(report)
+        self.assertEqual(records[0]["verdict"], "present")
+        self.assertEqual(records[0]["file"], "nested/deep/util.py")
+
+    def test_uncited_quote_in_an_unknown_layout_is_skipped(self) -> None:
+        report = "### 1. INFO (confidence: low): style\n\n```text\nsome prose\n```\n"
+        self.assertEqual(self.check(report), [])
+
     def run_cli(self, report: str, *extra_args: str) -> subprocess.CompletedProcess:
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as fh:
             fh.write(report)
@@ -539,6 +574,11 @@ class QuoteCheckTest(unittest.TestCase):
         result = self.run_cli(report, "--format", "text")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("[present] #1 src/app.py:10", result.stdout)
+
+    def test_cli_exits_one_when_an_unknown_layout_quotes_a_missing_line(self) -> None:
+        report = "### 1. WARNING (confidence: high): bad\n\nAt `src/app.py:10`:\n\n```py\nnowhere\n```\n"
+        result = self.run_cli(report)
+        self.assertEqual(result.returncode, 1)
 
     def test_cli_exits_two_when_root_is_not_a_directory(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as fh:

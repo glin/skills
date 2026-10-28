@@ -57,7 +57,9 @@ A review that checks only a design document's stated claims misses what the docu
 
 ## Findings and verification
 
-A report that merges severity and confidence presents a high-impact guess as an urgent fact. The reachability check drops findings on code that cannot run.
+A report that merges severity and confidence presents a high-impact guess as an urgent fact. The reachability check drops failure findings on code that cannot run. Code that cannot run is a dead-code finding instead.
+
+Agents add fallbacks for values their producer never emits, and tests that fake those values hide the dead code. Tracing the producer separates such a fallback from a defense at a real input or version boundary. Reviewers otherwise stop at a lenient client parser or a layer behind a filter and call the fallback reachable. Each kept site needs cited producer code or a named boundary input, so keeping it costs the same trace as removing it. Reporting every site stops a fix that removes one copy.
 
 In an interactive review the author decides what matters. A finding the reviewer drops in silence takes that choice away.
 
@@ -65,7 +67,11 @@ Reviewers invent text-level defects, and a correction for an invented defect add
 
 The code rules put the verdict alone on the last line, so the coordinator can tell a finished report from a truncated one on every route. The record writer reads the call there.
 
-The quote check runs before the author sees any finding, so an unsupported citation never reaches the author as work. A parser failure does not prove a finding false, so unparsed findings get a manual check.
+The quote check runs before the author sees any finding, so an unsupported citation never reaches the author as work. A parser failure does not prove a finding false, so unparsed findings get a manual check. Reviewers write findings in more layouts than a parser can list, so a report with no known marker still gets each cited quote checked. Those records name no finding, so a failed quote sends its finding to a hand check, never to a drop.
+
+A valid finding is not always worth acting on. A fix menu that offers every verified finding makes harmless findings read as work, and the author then has to ask which ones matter. A general rule to challenge each proposal does not stop this, because the menu shapes the recommendation. The Worth mark keeps every finding visible, so the author still decides.
+
+A runtime finding can be severe and still have nothing real that causes it. Judged on harm and cost alone, it lands in the fix-all option, and later ratings repeat that mark. The trigger test stops it at the first mark, and the note mark keeps it in front of the author.
 
 ## Reviewers and models
 

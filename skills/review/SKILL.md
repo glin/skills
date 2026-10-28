@@ -226,7 +226,7 @@ python3 "$SKILL_DIR/scripts/quote_check.py" --root <reviewed tree> --report <rep
 
 Do not copy report text into a shell command.
 
-Read every finding's verdict from the JSON output, whatever the exit code, except exit 2 or exit 3. Exit code 0 can still include `present-elsewhere` findings, so the exit code alone never substitutes for reading the JSON. Exit code 1 means at least one finding is `absent`, `file-missing`, or `unparseable`. Exit code 2 is a usage error. Fix the command and rerun it. Exit code 3 means the script parsed no finding out of the report. The report can still hold real findings in a format the script does not recognize, so on exit 3, check every finding in the report by hand.
+Read every finding's verdict from the JSON output, whatever the exit code, except exit 2 or exit 3. Exit code 0 can still include `present-elsewhere` findings, so the exit code alone never substitutes for reading the JSON. Exit code 1 means at least one finding is `absent`, `file-missing`, or `unparseable`. Exit code 2 is a usage error. Fix the command and rerun it. Exit code 3 means the report holds no finding marker and no cited quote, so check every finding in the report by hand. Records with a file but no severity come from a report with no finding marker, and each one checks one cited quote. Match each such record to its finding by citation. A finding whose quotes are all `present` skips the text comparison. Give every other finding the full check, and never drop a finding on such a record alone.
 
 Drop only the findings the script's JSON marks `absent` or `file-missing`. These never reach the author as findings. The summary in step 5 notes their count. For a finding marked `present`, skip re-comparing the quote against the file and move straight to the judgement check below. Give a finding marked `present-elsewhere` or `unparseable` the full check: compare the quote against the file yourself, then judge it. Give the same full check to any finding the JSON does not list at all, for example because the report mixed formats. Never drop an `unparseable` finding on the script's verdict alone, since a quote the script failed to pair or place can still name a real problem.
 
@@ -240,20 +240,22 @@ When recording, mark an accepted finding that contradicts a factual brief claim 
 
 **Context management:** File output returns a report path and metadata. Read each saved report once for verification and triage. That read enters the coordinator's context. A native reviewer's text report enters the context at completion, so triage works from that text. Read its saved copy only after the text has left the context, such as after compaction or a session transfer. A dispatched report arrives as a file, so read it once like a file-output report. Present one concise summary of surviving findings and the verdict. Note dropped absent or file-missing findings only by count. Later briefs carry verified findings, not repeated full reports or raw logs. Refer to findings by number in follow-up discussion.
 
+Before you show the table, mark what each finding is worth: act, ask, or note. Act means fix it. Ask means the author's choice decides it, so put it to the author as a question. Note means no action. Base the mark on the harm that remains if nobody acts, the cost of acting, and the evidence from the whole run, such as a runtime test or another reviewer. A finding that claims wrong or slow behavior at run time is act or ask only when it has a trigger that a real deployment can meet: an input, a configuration, or a sequence of events that no upstream guard blocks. A finding with no such trigger is theoretical. Mark it note at any severity, however many reviewers rate it high. Name the trigger in the Worth reason. When you ask another agent to rate the findings, give it each trigger or say that there is none, and allow theoretical as an answer. Keep every finding in the table, with its mark and reason in the Worth column. Offer the fix-all option only for findings marked act. With no finding marked act, leave out the fix-all option.
+
 **For multi-model reviews**, present a single unified findings table:
 
-| # | Severity | Finding | Opus | Sonnet | GPT | Gemini |
-|---|----------|---------|------|--------|-----|--------|
-| 1 | WARNING | Description of issue | WARNING | WARNING | - | - |
-| 2 | INFO | Another issue | - | INFO | INFO | INFO |
+| # | Severity | Finding | Opus | Sonnet | GPT | Gemini | Worth |
+|---|----------|---------|------|--------|-----|--------|---------|
+| 1 | WARNING | Description of issue | WARNING | WARNING | - | - | act: the reason |
+| 2 | INFO | Another issue | - | INFO | INFO | INFO | note: the reason |
 
 Show which models caught each finding and at what severity. After the table, add a brief note on model differences (1-2 sentences).
 
-**For single-model reviews**, present findings directly without the model columns.
+**For single-model reviews**, present findings directly without the model columns, and keep the Worth column.
 
 Then **ask the author** what they want to do:
-- Fix all issues
-- Fix specific issues (by number)
+- Fix all findings marked act
+- Fix specific findings by number, whatever their mark
 - Ignore and commit as-is
 - Get more details on specific findings
 
