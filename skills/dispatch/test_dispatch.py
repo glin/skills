@@ -42,6 +42,10 @@ if args[0] == "--help":
     legacy = os.environ.get("DISPATCH_TEST_ARC_HELP", "legacy") == "legacy"
     print("Usage: arc windows [--json]\\n       arc start --prompt-file PATH "
           + ("(--agent-run | --untagged)" if legacy else "[--agent-run]") + " [--name NAME]")
+elif args[:2] == ["start", "--help"]:
+    print("Usage: arc start --prompt-file PATH (--setup KEY | --provider claude|codex) [OPTIONS]")
+    if not os.environ.get("DISPATCH_TEST_ARC_NO_COMPLETION"):
+        print("  --completion manual|wait  With --arc-dispatch, select retained retrieval or waited completion.")
 elif args[0] == "windows":
     if case == "unready": window["panelReady"] = False
     if case == "wrong-folder": window["folders"] = [os.path.dirname(os.getcwd())]
@@ -79,7 +83,7 @@ else:
     if case == "refused": result["reason"] = "The requested setup is unavailable."
     if case in ("accepted", "accepted-with-errors"):
         result.update(sessionId="12345678-1234-1234-1234-123456789abc", provider=args[args.index("--provider") + 1],
-                      errors=["Name save failed"] if case == "accepted-with-errors" else [])
+                      errors=["Name save failed"] if case == "accepted-with-errors" else [], link=None)
     if case == "missing-ack": result.pop("requestId")
     if case == "conflicting-refusal": result.update(status="refused", sessionId="already-started")
     override = json.loads(os.environ.get("DISPATCH_TEST_ARC_REPLY_OVERRIDE", "{}"))
@@ -127,7 +131,8 @@ class DispatchTestCase(unittest.TestCase):
         self.prompt_path.write_text("Finish the bounded test task.\n", encoding="utf-8")
         self.env = dict(os.environ)
         self.env["ARC_BIN"] = str(self.bin_dir / "missing-arc")
-        for key in ("ARC_WINDOW", "CLAUDE_CODE_PROMPT_CACHE_TTL"):
+        for key in ("ARC_WINDOW", "CLAUDE_CODE_PROMPT_CACHE_TTL", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID",
+                    "DISPATCH_WAIT_LIMIT_SECONDS"):
             self.env.pop(key, None)
         # The launcher reads the Codex provider from the Codex config, so the machine's own
         # config must not reach it.
@@ -193,6 +198,62 @@ class ArcStubTestCase(DispatchTestCase):
         return call[call.index(flag) + 1]
 
 
+class ServiceTierTests(ArcStubTestCase):
+    def test_hosted_tier_survives_python_and_bash_bridge(self):
+        for shell in (False, True):
+            for tier in (None, "default", "fast", "priority", "ultrafast"):
+                with self.subTest(shell=shell, tier=tier):
+                    self.arc_calls.unlink(missing_ok=True)
+                    flags = ["--runner", "codex", "--model", "sol", "--full-access"]
+                    if tier is not None:
+                        flags += ["--service-tier", tier]
+                    result = self.launch(flags, shell=shell)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIsNone(self.run_call())
+                    start = self.calls()[-1]
+                    self.assertEqual(start[0], "start")
+                    self.assertEqual(start.count("--service-tier"), int(tier is not None))
+                    if tier is not None:
+                        self.assertEqual(self.value(start, "--service-tier"), tier)
+                    self.assertEqual(self.value(start, "--model"), "gpt-6.1-sol")
+                    self.assertEqual(self.value(start, "--effort"), "high")
+                    self.assertEqual(self.value(start, "--permissions"), "never")
+                    self.assertIn('"owned":true', result.stdout.splitlines()[-1])
+
+    def test_invalid_tier_never_contacts_arc(self):
+        cases = [(["--runner", "codex", "--service-tier", value], False)
+                 for value in ("", "auto", "ultra", "FAST")]
+        cases += [(["--runner", "codex", "--service-tier", "fast", "--service-tier=fast"], False),
+                  (["--runner", "codex", "--service-tier"], False),
+                  (["--service-tier", "default"], False),
+                  (["--service-tier", "fast"], True)]
+        for shell in (False, True):
+            for flags, observe in cases:
+                with self.subTest(shell=shell, flags=flags, observe=observe):
+                    self.arc_calls.unlink(missing_ok=True)
+                    result = self.launch(flags, shell=shell, observe=observe)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertEqual(self.calls(), [])
+
+    def test_refused_fallback_preserves_tier_and_unknown_delivery_stops(self):
+        for shell in (False, True):
+            for case in ("refused", "stderr-only"):
+                with self.subTest(shell=shell, case=case):
+                    self.arc_calls.unlink(missing_ok=True)
+                    result = self.launch(["--runner", "codex", "--full-access", "--service-tier=ultrafast"],
+                                         case=case, shell=shell)
+                    start = [call for call in self.calls() if call[0] == "start" and "--help" not in call][0]
+                    self.assertEqual(self.value(start, "--service-tier"), "ultrafast")
+                    if case == "refused":
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(self.value(self.run_call(), "--service-tier"), "ultrafast")
+                        self.assertEqual(self.run_call().count("--service-tier"), 1)
+                    else:
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIsNone(self.run_call())
+                        self.assertIn("Do not start another worker", result.stderr)
+
+
 class ArcStartTests(ArcStubTestCase):
     def test_both_launchers_accept_without_a_standalone_launch(self):
         # A legacy Arc lists --untagged in its help. A current Arc starts the reader's session without it.
@@ -219,6 +280,46 @@ class ArcStartTests(ArcStubTestCase):
                 self.assertIn("mode: Arc session", result.stdout)
                 if case == "accepted-with-errors": self.assertIn("Name save failed", result.stdout)
 
+    def test_arc_link_prints_unchanged_before_the_receipt(self):
+        host, session = "a" * 24, "12345678-1234-1234-1234-123456789abc"
+        arc_link = "[Arc label](arc-session:literal%252f%21%27%28%29%2A~)"
+        rows = [
+            ("string", "accepted", host, {"set": {"link": arc_link}}, arc_link),
+            ("accepted with errors", "accepted-with-errors", host, {"set": {"link": arc_link}}, arc_link),
+            ("no invoking window", "accepted", None, {"set": {"link": arc_link}}, arc_link),
+            ("empty string", "accepted", host, {"set": {"link": ""}}, ""),
+            ("null", "accepted", host, {"set": {"link": None}}, None),
+            ("absent", "accepted", host, {"remove": ["link"]}, None),
+            ("non-string", "accepted", host, {"set": {"link": 42}}, None),
+        ]
+        for subject, case, window, override, expected in rows:
+            for shell in (False, True):
+                with self.subTest(subject=subject, shell=shell):
+                    self.arc_calls.unlink(missing_ok=True)
+                    self.env.pop("ARC_WINDOW", None)
+                    if window:
+                        self.env["ARC_WINDOW"] = window
+                    self.env["DISPATCH_TEST_ARC_REPLY_OVERRIDE"] = json.dumps(override)
+                    result = self.launch(case=case, shell=shell)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIsNone(self.run_call())
+                    start = self.calls()[-1]
+                    request = self.value(start, "--request-id")
+                    reply = {"version": 1, "requestId": request, "status": case, "requester": None,
+                             "sessionId": session, "provider": "claude",
+                             "errors": ["Name save failed"] if case == "accepted-with-errors" else [], "link": None}
+                    reply.update(override.get("set", {}))
+                    for key in override.get("remove", []):
+                        reply.pop(key, None)
+                    lines = result.stdout.splitlines()
+                    self.assertEqual(lines[:2], [f"window: {host}", f"request: {request}"])
+                    self.assertEqual(json.loads(lines[2]), reply)
+                    receipt = {"agent": "claude", "session_id": session, "name": "Inspect", "owned": True}
+                    self.assertEqual(lines[3:], ["mode: Arc session", "runner: claude",
+                                                f"tree: {self.work_dir}", "name: Inspect", f"id: {session}",
+                                                *([f"link: {expected}"] if expected is not None else []),
+                                                "ARC_DISPATCH_SESSION=" + json.dumps(receipt, separators=(",", ":"))])
+
     def test_unknown_delivery_never_falls_back_on_either_launcher(self):
         for shell in (False, True):
             for case in ("unknown", "malformed", "missing-ack", "nonzero", "conflicting-refusal", "stderr-only"):
@@ -232,20 +333,30 @@ class ArcStartTests(ArcStubTestCase):
                     if case == "stderr-only":
                         self.assertIn("The selected Arc window is unavailable.", result.stderr)
 
-    def test_explicit_refusal_falls_back_with_requested_flags(self):
+    def test_explicit_refusal_ends_owned_claude_and_falls_back_for_codex_or_attach(self):
         self.env["DISPATCH_TEST_ARC_NONZERO"] = "1"
         for shell in (False, True):
             for override in ({}, {"remove": ["reason"], "set": {"requester": "parent-session"}}):
-                with self.subTest(shell=shell, override=override):
+                with self.subTest(shell=shell, override=override, request="claude"):
                     self.arc_calls.unlink(missing_ok=True)
                     self.env["DISPATCH_TEST_ARC_REPLY_OVERRIDE"] = json.dumps(override)
                     result = self.launch(["--permission-mode", "acceptEdits"], "refused", shell)
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn("refused before acceptance", result.stderr)
-                    run = self.run_call()
-                    self.assertEqual(self.value(run, "--permissions"), "acceptEdits")
-                    self.assertEqual(self.value(run, "--model"), "sonnet")
-                    self.assertIn("--agent-run=false", run)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    reason = "Arc refused the launch" if override else "The requested setup is unavailable"
+                    self.assertIn(f"Reader-owned launch refused: Arc refused the launch: {reason}. No worker", result.stderr)
+                    self.assertIn("add --attach", result.stderr)
+                    self.assertIsNone(self.run_call())
+                for flags, permissions in ((["--runner", "codex", "--full-access"], "danger-full-access"),
+                                           (["--attach", "--permission-mode", "acceptEdits"], "acceptEdits")):
+                    with self.subTest(shell=shell, override=override, request=flags[1]):
+                        self.arc_calls.unlink(missing_ok=True)
+                        result = self.launch(flags, "refused", shell)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("refused before acceptance", result.stderr)
+                        run = self.run_call()
+                        self.assertEqual(self.value(run, "--permissions"), permissions)
+                        self.assertEqual(self.value(run, "--model"), "sonnet")
+                        self.assertIn("--agent-run=false", run)
 
     def test_malformed_refusals_never_start_a_standalone_launch_on_either_launcher(self):
         overrides = [{"set": {"sessionId": value}} for value in ([], False, 0, "", None, {}, "already-started")]
@@ -264,7 +375,7 @@ class ArcStartTests(ArcStubTestCase):
                     self.env["DISPATCH_TEST_ARC_REPLY_OVERRIDE"] = json.dumps(override)
                     result = self.launch(case="refused", shell=shell)
                     self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                    self.assertEqual(self.verbs(), ["windows", "--help", "start"])
+                    self.assertEqual(self.verbs(), ["windows", "--help", "start", "start"])
                     self.assertIn("mode: Arc delivery unknown", result.stdout)
                     self.assertIn("Do not start another worker", result.stderr)
 
@@ -299,18 +410,19 @@ class ArcStartTests(ArcStubTestCase):
         self.assertIn("--read-only", self.run_call())
         self.assertEqual(self.value(self.run_call(), "--completion"), "wait")
 
-    def test_codex_default_refuses_arc_and_full_access_maps_exactly(self):
+    def test_codex_default_runs_standalone_and_full_access_maps_exactly(self):
         result = self.launch(["--runner", "codex"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Codex workspace-write with no approvals", result.stderr)
+        self.assertIn("Arc cannot keep Codex workspace-write with no approvals", result.stderr)
+        self.assertNotIn("cannot send", result.stderr)
         self.assertEqual(self.verbs(), ["run"])
         self.assertNotIn("--permissions", self.run_call())
         for shell in (False, True):
             with self.subTest(shell=shell):
-                self.arc_calls.unlink()
+                self.arc_calls.unlink(missing_ok=True)
                 result = self.launch(["--runner", "codex", "--full-access", "--model", "sol"], shell=shell)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(self.verbs(), ["windows", "--help", "start"])
+                self.assertEqual(self.verbs(), ["windows", "--help", "start", "start"])
                 start = self.calls()[-1]
                 self.assertEqual(self.value(start, "--permissions"), "never")
                 self.assertEqual(self.value(start, "--model"), "gpt-6.1-sol")
@@ -350,21 +462,36 @@ class ArcStartTests(ArcStubTestCase):
         self.env["ARC_BIN"] = str(launcher)
         self.env["DISPATCH_TEST_EXPANSION"] = "expanded"
         name = 'Docs & %DISPATCH_TEST_EXPANSION% |<>^!()"'
-        for shell in (False, True):
-            with self.subTest(shell=shell):
-                self.arc_calls.unlink(missing_ok=True)
-                result = self.launch(["--runner", "codex", "--full-access", "--model", "sol",
-                                      "--effort", "high", "--name", name], shell=shell)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("mode: Arc session", result.stdout)
-                self.assertEqual(self.verbs(), ["windows", "--help", "start"])
-                start = self.calls()[-1]
-                for flag, expected in (("--name", name), ("--model", "gpt-6.1-sol"),
-                                       ("--effort", "high"), ("--provider", "codex"),
-                                       ("--permissions", "never"), ("--prompt-file", str(self.prompt_path))):
-                    self.assertEqual(self.value(start, flag), expected)
-                self.assertNotIn("--agent-run", start)
-                self.assertIn('"owned":true', result.stdout.splitlines()[-1])
+        for published in (False, True):
+            if published:
+                active_entry = launcher.parent / "run.cjs"
+                active_entry.write_bytes(entry.read_bytes())
+                entry.unlink()
+            for shell in (False, True):
+                with self.subTest(shell=shell, published=published):
+                    self.arc_calls.unlink(missing_ok=True)
+                    result = self.launch(["--runner", "codex", "--full-access", "--service-tier", "fast", "--model", "sol",
+                                          "--effort", "high", "--name", name], shell=shell)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("mode: Arc session", result.stdout)
+                    self.assertEqual(self.verbs(), ["windows", "--help", "start", "start"])
+                    start = self.calls()[-1]
+                    for flag, expected in (("--name", name), ("--model", "gpt-6.1-sol"),
+                                           ("--effort", "high"), ("--provider", "codex"), ("--service-tier", "fast"),
+                                           ("--permissions", "never"), ("--prompt-file", str(self.prompt_path))):
+                        self.assertEqual(self.value(start, flag), expected)
+                    self.assertNotIn("--agent-run", start)
+                    self.assertIn('"owned":true', result.stdout.splitlines()[-1])
+                    self.arc_calls.unlink()
+                    result = self.launch(["--runner", "codex", "--read-only", "--service-tier", "fast",
+                                          "--model", "gpt-6.1-sol", "--name", name], shell=shell)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(self.verbs(), ["run"])
+                    run = self.run_call()
+                    self.assertEqual(self.value(run, "--service-tier"), "fast")
+                    self.assertEqual(self.value(run, "--name"), name)
+                    self.assertIn("--read-only", run)
+                    self.assertNotIn("--permissions", run)
 
     @unittest.skipUnless(os.name == "nt", "native Windows cmd boundary")
     def test_unknown_windows_arc_wrapper_refuses_without_running_it(self):
@@ -374,16 +501,16 @@ class ArcStartTests(ArcStubTestCase):
         self.assertIn("cannot preserve literal arguments", result.stderr)
         self.assertEqual(self.calls(), [])
 
-    def test_unsupported_claude_permissions_run_standalone_on_both_launchers(self):
+    def test_unsupported_claude_permissions_refuse_without_a_worker_on_both_launchers(self):
         for shell in (False, True):
             for mode in ("dontAsk", "bypassPermissions"):
                 with self.subTest(shell=shell, mode=mode):
                     self.arc_calls.unlink(missing_ok=True)
                     result = self.launch(["--permission-mode", mode], shell=shell)
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn("refused before acceptance", result.stderr)
-                    self.assertEqual(self.verbs(), ["run"])
-                    self.assertEqual(self.value(self.run_call(), "--permissions"), mode)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn(f"Arc cannot keep Claude --permission-mode {mode}", result.stderr)
+                    self.assertIn("add --attach", result.stderr)
+                    self.assertEqual(self.calls(), [])
 
     def test_local_prompt_incompatibilities_refuse_before_contact_on_both_launchers(self):
         for shell in (False, True):
@@ -431,31 +558,57 @@ class ArcStartTests(ArcStubTestCase):
 
 
 class LaunchObservationTests(ArcStubTestCase):
-    def test_explicit_log_keeps_owned_waited_launches_observable_with_a_ready_window(self):
+    def test_owned_launches_stay_observable_in_a_ready_window(self):
+        self.env["DISPATCH_TEST_ARC_REPLY_OVERRIDE"] = json.dumps({"set": {"launchId": "launch-1"}})
         for shell in (False, True):
             for runner in ("claude", "codex"):
                 with self.subTest(shell=shell, runner=runner):
                     self.arc_calls.unlink(missing_ok=True)
-                    log = str(Path(self.tmpdir) / f"{runner}.log")
-                    flags = ["--runner", runner, "--log", log]
+                    flags = ["--runner", runner]
                     if runner == "codex":
                         flags.append("--full-access")
                     result = self.launch(flags, shell=shell)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual(self.verbs(), ["run"])
-                    launch = self.run_call()
-                    self.assertIn("--agent-run=false", launch)
-                    self.assertEqual(self.value(launch, "--completion"), "manual")
-                    self.assertEqual(Path(self.value(launch, "--log")), Path(log))
-                    if runner == "codex":
-                        self.assertEqual(self.value(launch, "--permissions"), "danger-full-access")
+                    self.assertEqual(self.verbs(), ["windows", "--help", "start", "start"])
+                    self.assertEqual(self.value(self.calls()[-1], "--completion"), "wait")
+                    self.assertIn("mode: Arc session", result.stdout)
                     self.assertIn("--wait-launch launch-1", result.stdout)
                     self.assertTrue(result.stdout.splitlines()[-1].startswith("ARC_DISPATCH_SESSION="))
                     result = self.launch(shell=shell, observe=True)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual(self.verbs().count("run"), 1)
-                    self.assertNotIn("start", self.verbs())
+                    self.assertEqual(sum(call[0] == "start" and "--help" not in call for call in self.calls()), 1)
+                    self.assertIsNone(self.run_call())
                     self.assertIn("outcome: succeeded", result.stdout)
+
+    def test_waited_arc_session_without_a_launch_id_exits_2_without_a_second_worker(self):
+        for shell in (False, True):
+            with self.subTest(shell=shell):
+                self.arc_calls.unlink(missing_ok=True)
+                result = self.launch(["--wait"], shell=shell)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(self.verbs(), ["windows", "--help", "start", "start"])
+                self.assertIn("Arc returned no launch ID for session", result.stderr)
+                self.assertNotIn("--wait-launch", result.stdout)
+                self.assertIn('"owned":true', result.stdout.splitlines()[-1])
+
+    def test_arc_start_without_completion_keeps_manual_start_and_waits_standalone(self):
+        self.env["DISPATCH_TEST_ARC_NO_COMPLETION"] = "1"
+        self.env["DISPATCH_TEST_ARC_REPLY_OVERRIDE"] = json.dumps({"set": {"launchId": "launch-1"}})
+        for shell in (False, True):
+            with self.subTest(shell=shell, wait=False):
+                self.arc_calls.unlink(missing_ok=True)
+                result = self.launch(shell=shell)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("--completion", self.calls()[-1])
+                self.assertIn("mode: Arc session", result.stdout)
+                self.assertNotIn("--wait-launch", result.stdout)
+            with self.subTest(shell=shell, wait=True):
+                self.arc_calls.unlink(missing_ok=True)
+                result = self.launch(["--wait"], shell=shell)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("the installed arc start cannot wait for the session", result.stderr)
+                self.assertEqual(self.verbs()[:4], ["windows", "--help", "start", "run"])
+                self.assertEqual(self.value(self.run_call(), "--completion"), "wait")
 
     def test_printed_observer_commands_start_with_a_spaced_interpreter_and_keep_reports_blinded(self):
         bash = git_bash()
@@ -486,6 +639,30 @@ class LaunchObservationTests(ArcStubTestCase):
                 self.assertIn("result: r.md", result.stdout)
                 self.assertNotIn("report\n", result.stdout)
         self.assertEqual(self.verbs().count("run"), 1)
+
+    def test_copied_resume_command_keeps_an_inline_deadline_override(self):
+        bash = git_bash()
+        if not bash:
+            self.skipTest("Bash unavailable for observer command")
+        result = self.run_dispatch(["--wait-launch", "launch-1"],
+                                   {"DISPATCH_WAIT_LIMIT_SECONDS": "0", "CODEX_THREAD_ID": "thread-1"})
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+        lines = result.stdout.splitlines()
+        commands = {line.split(": ", 1)[0]: line.split(": ", 1)[1] for line in lines if line.startswith("await") and ": " in line}
+        shells = [("await", [bash, "-c"])]
+        if os.name == "nt":
+            shells.append(("await (PowerShell)", ["powershell", "-NoProfile", "-Command"]))
+        start = lines[lines.index("await (Codex cell):") + 2]
+        cell_command = json.loads(start.split("{cmd: ", 1)[1].split(", yield_time_ms", 1)[0])
+        self.assertEqual(cell_command, commands[shells[-1][0]])
+        # The copied command runs without the variable, as in a fresh shell.
+        for label, shell in shells:
+            with self.subTest(shell=label):
+                copied = subprocess.run([*shell, commands[label]], env=self.env, cwd=self.work_dir,
+                                        capture_output=True, text=True, timeout=60)
+                self.assertIn("outcome: deadline", copied.stdout, copied.stdout + copied.stderr)
+                self.assertNotIn("outcome: succeeded", copied.stdout)
+        self.assertEqual(self.calls(), [])
 
     def test_final_interval_reply_keeps_outcome_and_deadline_cause_after_command_overhead(self):
         for observed in (False, True):
@@ -526,6 +703,164 @@ class LaunchObservationTests(ArcStubTestCase):
                     self.assertIn("outcome: succeeded", output.getvalue())
                 else:
                     self.assertIn("Arc published no outcome for launch launch-1 in 2 seconds", errors.getvalue())
+
+    def wait_with_clock(self, environ, arguments):
+        """Run dispatch.main in this process against a clock that each Arc wait advances by
+        its whole deadline. Arc never publishes an outcome. Return the exit code, stdout,
+        stderr and the seconds that passed."""
+        clock = [0.0]
+
+        def run(command, **kwargs):
+            if command[1] == "run":
+                reply = {"launchId": "launch-1", "state": "deadline"}
+            else:
+                clock[0] += int(command[-1]) / 1000
+                reply = {"launchId": "launch-1", "state": "deadline"}
+            return subprocess.CompletedProcess(command, 0, json.dumps(reply), "")
+
+        output, errors = io.StringIO(), io.StringIO()
+        with unittest.mock.patch.dict(os.environ, environ, clear=True), \
+                unittest.mock.patch.object(dispatch, "resolve_bin", return_value="arc"), \
+                unittest.mock.patch.object(dispatch, "arc_command", return_value=["arc"]), \
+                unittest.mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                unittest.mock.patch.object(dispatch.subprocess, "run", side_effect=run), \
+                redirect_stdout(output), redirect_stderr(errors):
+            code = dispatch.main(list(arguments))
+        return code, output.getvalue(), errors.getvalue(), clock[0]
+
+    def test_observation_ends_before_the_parent_cache_expires_and_prints_its_resume_command(self):
+        launch = ["--runner", "claude", "--read-only", "--wait", "--arc-dispatch", "--model", "sonnet",
+                  "--effort", "high", "--prompt", str(self.prompt_path), "--cwd", str(self.work_dir)]
+        five, hour = {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}, {"CLAUDE_CODE_PROMPT_CACHE_TTL": "1h"}
+        codex = {"CODEX_THREAD_ID": "thread-1"}
+        # Each case: the parent's environment, the command, and the deadline, where None
+        # keeps the 25 hour bound.
+        cases = (
+            (five, ["--wait-launch", "launch-1"], 240),
+            (hour, ["--wait-launch", "launch-1", "--read-only"], 3540),
+            ({**five, **codex, "CLAUDE_CODE_SESSION_ID": "session-1"}, ["--wait-launch", "launch-1"], 240),
+            ({**hour, "DISPATCH_WAIT_LIMIT_SECONDS": "3300"}, ["--wait-launch", "launch-1"], 3300),
+            ({**codex, "DISPATCH_WAIT_LIMIT_SECONDS": "600"}, ["--wait-launch", "launch-1"], 600),
+            (five, launch, 240),
+            ({}, ["--wait-launch", "launch-1"], None),
+            ({"CLAUDE_CODE_PROMPT_CACHE_TTL": "10m"}, ["--wait-launch", "launch-1"], None),
+            ({**five, **codex}, ["--wait-launch", "launch-1"], None),
+            # The launch sets the worker's 5 minute lifetime in the environment after the
+            # deadline reads the parent's.
+            ({}, launch, None),
+        )
+        for environ, arguments, deadline in cases:
+            with self.subTest(environ=environ, arguments=arguments[:3]):
+                code, output, errors, elapsed = self.wait_with_clock(environ, arguments)
+                if deadline is None:
+                    self.assertEqual((code, elapsed), (2, dispatch.WAIT_LIMIT_SECONDS), errors)
+                    self.assertNotIn("outcome: deadline", output)
+                    self.assertIn("Arc published no outcome", errors)
+                    continue
+                self.assertEqual((code, elapsed), (75, deadline), errors)
+                lines = output.splitlines()
+                self.assertIn("outcome: deadline", lines)
+                after = lines[lines.index("outcome: deadline") + 1:]
+                expected = ["--wait-launch", "launch-1", *(["--read-only"] if "--read-only" in arguments else [])]
+                override = environ.get("DISPATCH_WAIT_LIMIT_SECONDS")
+                prefix = [f"DISPATCH_WAIT_LIMIT_SECONDS={override}"] if override else []
+                resume = next(line for line in after if line.startswith("await: "))[len("await: "):]
+                words = shlex.split(resume)
+                self.assertEqual(words[:len(prefix)], prefix)
+                self.assertEqual(words[len(prefix) + 2:], expected)
+                powershell = None
+                if os.name == "nt":
+                    label = "await (PowerShell): "
+                    powershell = next(line for line in after if line.startswith(label))[len(label):]
+                    self.assertTrue(powershell.startswith(
+                        f"$env:DISPATCH_WAIT_LIMIT_SECONDS = '{override}'; & " if override else "& "), powershell)
+                    self.assertTrue(powershell.endswith(" ".join(f"'{word}'" for word in expected)), powershell)
+                self.assertEqual("await (Codex cell):" in after, dispatch.codex_parent(environ))
+                if "await (Codex cell):" in after:
+                    start = after[after.index("await (Codex cell):") + 2]
+                    cell_command = json.loads(start.split("{cmd: ", 1)[1].split(", yield_time_ms", 1)[0])
+                    self.assertEqual(cell_command, powershell or resume)
+                self.assertIn("Never relaunch the worker", errors)
+
+    def test_slow_arc_replies_end_the_observation_at_its_deadline(self):
+        """A 5 minute parent's observation returns by its 240 second deadline when an Arc
+        wait, the status reads or the result read run slow."""
+        observed = {"launchId": "launch-1", "state": "observed", "eventId": "event-1", "outcome": "succeeded"}
+        unsaved, saved = {"observation": {"monitor": "observing"}}, {"observation": {"exitCode": 0, "monitor": "finished"}}
+        report = {"report": {"path": "r.md", "bytes": 7}, "text": "report\n"}
+        # Each case: the seconds each Arc verb takes, and its reply. A slow wait spends a
+        # minute of startup past the deadline it asks Arc for.
+        cases = {
+            "wait": {"wait": (lambda ms: ms / 1000 + 60, {"state": "deadline"})},
+            "status": {"wait": (lambda ms: 100, observed), "status": (lambda ms: 30, unsaved)},
+            "result": {"wait": (lambda ms: 100, observed), "status": (lambda ms: 1, saved),
+                       "result": (lambda ms: 200, report)},
+        }
+        for slow, verbs in cases.items():
+            with self.subTest(slow=slow):
+                clock = [0.0]
+
+                def run(command, **kwargs):
+                    duration, reply = verbs[command[2]]
+                    seconds = duration(int(command[-1]) if command[2] == "wait" else 0)
+                    if seconds > kwargs["timeout"]:
+                        clock[0] += kwargs["timeout"]
+                        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                    clock[0] += seconds
+                    return subprocess.CompletedProcess(command, 0, json.dumps(reply), "")
+
+                output, errors = io.StringIO(), io.StringIO()
+                with unittest.mock.patch.dict(os.environ, {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}, clear=True), \
+                        unittest.mock.patch.object(dispatch, "resolve_bin", return_value="arc"), \
+                        unittest.mock.patch.object(dispatch, "arc_command", return_value=["arc"]), \
+                        unittest.mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                        unittest.mock.patch.object(dispatch.time, "sleep",
+                                                   side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+                        unittest.mock.patch.object(dispatch.subprocess, "run", side_effect=run), \
+                        redirect_stdout(output), redirect_stderr(errors):
+                    code = dispatch.main(["--wait-launch", "launch-1"])
+                lines = output.getvalue().splitlines()
+                self.assertEqual(code, 75, output.getvalue() + errors.getvalue())
+                self.assertLessEqual(clock[0], 240)
+                self.assertEqual([line for line in lines if line.startswith("outcome: ")], ["outcome: deadline"])
+                self.assertTrue(any(line.startswith("await: ") for line in lines))
+
+    def test_codex_parent_gets_one_cell_that_waits_until_the_observation_exits(self):
+        node = shutil.which("node")
+        for codex in (False, True):
+            for claude in (False, True):
+                environ = {**({"CODEX_THREAD_ID": "thread-1"} if codex else {}),
+                           **({"CLAUDE_CODE_SESSION_ID": "session-1"} if claude else {})}
+                with self.subTest(environ=environ):
+                    output = io.StringIO()
+                    with unittest.mock.patch.dict(os.environ, environ, clear=True), redirect_stdout(output):
+                        dispatch.print_observer("launch-1", True)
+                    lines = output.getvalue().splitlines()
+                    self.assertEqual("await (Codex cell):" in lines, codex and not claude)
+                    if "await (Codex cell):" not in lines:
+                        continue
+                    cell = lines[lines.index("await (Codex cell):") + 1:]
+                    self.assertEqual(cell[-1], "")
+                    cell = cell[:-1]
+                    self.assertEqual(cell[0], '// @exec: {"yield_time_ms": 1500000}')
+                    label = "await (PowerShell): " if os.name == "nt" else "await: "
+                    command = next(line for line in lines if line.startswith(label))[len(label):]
+                    self.assertTrue(command.endswith("'--wait-launch' 'launch-1' '--read-only'" if os.name == "nt"
+                                                     else "--wait-launch launch-1 --read-only"))
+                    if not node:
+                        continue
+                    # Run the cell against tools that answer one start and two reads.
+                    harness = ("const calls = []; let printed = null;\n"
+                               "const replies = [{session_id: 7, output: 'a'}, {session_id: 7, output: 'b'}, {output: 'c', exit_code: 75}];\n"
+                               "const tools = {exec_command: async (a) => { calls.push(['exec', a.cmd]); return replies.shift(); },\n"
+                               "  write_stdin: async (a) => { calls.push(['read', a.session_id, a.chars, a.yield_time_ms]); return replies.shift(); }};\n"
+                               "const text = (value) => { printed = value; };\n"
+                               "(async () => {\n" + "\n".join(cell) + "\nconsole.log(JSON.stringify({calls, printed}));\n})();\n")
+                    result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=60)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    ran = json.loads(result.stdout)
+                    self.assertEqual(ran["calls"], [["exec", command], ["read", 7, "", 300000], ["read", 7, "", 300000]])
+                    self.assertEqual(ran["printed"], "abcexit code: 75")
 
     def test_missing_marker_refuses_before_arc_for_both_runners_and_launchers(self):
         for shell in (False, True):
@@ -721,9 +1056,24 @@ class ModelNameTests(unittest.TestCase):
                 return dispatch.resolve_codex_model(model)
 
     def test_codex_shorthands_reach_arc_start_as_full_ids(self):
-        for shorthand, model in (("sol", "gpt-6.1-sol"), ("luna", "gpt-6-luna"),
+        for shorthand, model in (("sol", "gpt-6.1-sol"), ("terra", "gpt-6.1-terra"), ("gpt-5.6-terra", "gpt-5.6-terra"), ("luna", "gpt-6-luna"),
                                  ("gpt-6.1-sol", "gpt-6.1-sol")):
             self.assertEqual(self.resolve(shorthand), model)
+
+    def test_shared_model_reference_matches_dispatch_shorthands(self):
+        reference = (SKILL_DIR.parent / "references" / "models.md").read_text(encoding="utf-8")
+        for shorthand, model in dispatch.CODEX_MODEL_SHORTHANDS.items():
+            self.assertIn(f"`{shorthand}` selects `{model}`", reference)
+            label = model.replace("gpt-", "GPT-", 1).replace(f"-{shorthand}", f" {shorthand.title()}")
+            self.assertRegex(reference, rf"(?m)^\| `{re.escape(shorthand)}` \| {re.escape(label)} \|")
+
+    @unittest.skipUnless(os.environ.get("ARC_REPO"), "set ARC_REPO to check Arc model shorthands")
+    def test_arc_launch_shorthands_match_dispatch(self):
+        launch_policy = (Path(os.environ["ARC_REPO"]) / "extension/src/launchpolicy.ts").read_text(encoding="utf-8")
+        table = re.search(r"codexModelShorthands[^=]*=\s*\{([^}]*)\}", launch_policy, re.DOTALL)
+        self.assertIsNotNone(table, "Arc shorthand table not found")
+        for shorthand, model in dispatch.CODEX_MODEL_SHORTHANDS.items():
+            self.assertRegex(table.group(1), rf"(?m)^\s*{re.escape(shorthand)}:\s*['\"]{re.escape(model)}['\"]\s*,")
 
     def test_bedrock_takes_the_openai_prefix_from_the_top_level_table_only(self):
         self.assertEqual(self.resolve("sol", 'model_provider = "amazon-bedrock"\n'), "openai.gpt-6.1-sol")

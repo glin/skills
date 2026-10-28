@@ -4,10 +4,14 @@
 #   dispatch.sh --runner claude|codex --prompt FILE --model M --effort E [--name N]
 #               [--cwd DIR] [--add-dir DIR]... [--permission-mode MODE]
 #               [--read-tool MCP_TOOL]... [--read-only] [--full-access] [--attach]
-#               [--owned] [--log FILE] [--wait] --arc-dispatch
+#               [--owned] [--log FILE] [--cache-ttl 5m|1h] [--wait] --arc-dispatch
+#               [--service-tier default|fast|priority|ultrafast]
 #   dispatch.sh --wait-launch LAUNCH_ID [--read-only] [--cwd DIR]
+# Codex --service-tier selects speed once. fast aliases priority. Omission inherits
+# effective defaults. Arc checks runtime support before launch.
 # A reader-owned writable request starts in a ready Arc window through arc start when
-# Python 3.10 can run dispatch.py's Arc route. Every other request runs through arc run.
+# Python 3.10 can run dispatch.py's Arc route. A Claude request refuses an option arc start
+# cannot keep unless --attach asks for a terminal. Every other request runs through arc run.
 # --attach implies --owned. --arc-dispatch asks Arc for its ARC_DISPATCH_SESSION= marker.
 #
 # Prints Arc's launch JSON, a short record, and Arc's marker as the last line. With
@@ -33,7 +37,8 @@ case "$0" in */*|*\\*) abs_path "$0" file ;; *) abs_path "./$0" file ;; esac
 skill_dir="${REPLY%/*}"
 original_args=("$@")
 runner=claude; prompt=""; model=""; effort=""; name=""; cwd="$PWD"; attach=0; owned=0; log=""
-read_only=0; full_access=0; wait=0; arc_dispatch=0; permmode=""; wait_launch=""
+read_only=0; full_access=0; wait=0; arc_dispatch=0; permmode=""; wait_launch=""; cache_ttl=""
+service_tier=""; service_tier_given=0
 adddirs=()
 read_tools=()
 worktree_refusal="--worktree is not a dispatch flag. The calling workflow creates the worktree with git worktree add -b <branch> <path> <base>, then launches with --cwd <path>"
@@ -45,6 +50,17 @@ while [ $# -gt 0 ]; do
     --prompt) prompt="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
     --effort) effort="$2"; shift 2 ;;
+    --service-tier|--service-tier=*)
+      if [ "$service_tier_given" = 1 ]; then echo "--service-tier must be passed once" >&2; exit 2; fi
+      service_tier_given=1
+      if [ "$1" = --service-tier ]; then
+        service_tier="${2:-}"; shift
+        if [ $# -gt 0 ]; then shift; fi
+      else
+        service_tier="${1#*=}"; shift
+      fi
+      case "$service_tier" in default|fast|priority|ultrafast) ;; *) echo "--service-tier must be default, fast, priority, or ultrafast" >&2; exit 2 ;; esac
+      ;;
     --name) name="$2"; shift 2 ;;
     --cwd) cwd="$2"; shift 2 ;;
     --worktree|--worktree=*|-w) echo "$worktree_refusal" >&2; exit 2 ;;
@@ -56,6 +72,7 @@ while [ $# -gt 0 ]; do
     --attach) attach=1; shift ;;
     --owned) owned=1; shift ;;
     --log) log="$2"; shift 2 ;;
+    --cache-ttl) cache_ttl="$2"; shift 2 ;;
     --notify-thread|--notify-thread=*) echo "$notify_refusal" >&2; exit 2 ;;
     --wait) wait=1; shift ;;
     --wait-launch) wait_launch="$2"; shift 2 ;;
@@ -72,14 +89,19 @@ done
 # also given.
 if [ "$attach" = 1 ]; then owned=1; fi
 if [ -z "$wait_launch" ]; then
+if [ "$service_tier_given" = 1 ] && [ "$runner" != codex ]; then echo "--service-tier requires --runner codex" >&2; exit 2; fi
 if [ -z "$prompt" ] || [ ! -f "$prompt" ]; then echo "--prompt FILE is required and must exist" >&2; exit 2; fi
 case "$runner" in claude|codex) ;; *) echo "--runner must be claude or codex" >&2; exit 2 ;; esac
 if [ "$full_access" = 1 ] && [ "$read_only" = 1 ]; then echo "--full-access and --read-only exclude each other" >&2; exit 2; fi
 if [ "$full_access" = 1 ] && [ "$runner" = claude ]; then echo "--full-access is a Codex flag: use --permission-mode for a Claude background session" >&2; exit 2; fi
+case "$cache_ttl" in ''|5m|1h) ;; *) echo "--cache-ttl must be 5m or 1h" >&2; exit 2 ;; esac
+if [ -n "$cache_ttl" ] && [ "$runner" != claude ]; then echo "--cache-ttl is a Claude flag: Codex sets its own cache lifetime" >&2; exit 2; fi
 # arc start takes no read tools, so this check runs before the window route.
 if [ "${#read_tools[@]}" -gt 0 ] && { [ "$runner" != claude ] || [ "$read_only" != 1 ]; }; then
   echo "--read-tool requires --runner claude --read-only" >&2; exit 2
 fi
+# arc run refuses attached waited completion, so the Arc route refuses it too.
+if [ "$attach" = 1 ] && [ "$wait" = 1 ]; then echo "--attach and --wait exclude each other" >&2; exit 2; fi
 if [ "$arc_dispatch" != 1 ]; then
   echo "--arc-dispatch is required for a new session. Add --arc-dispatch to the foreground launch command" >&2; exit 2
 fi
@@ -96,6 +118,24 @@ fi
 arc_bin="${ARC_BIN:-arc}"
 # Share Arc delivery classification with the Python launcher. Exit 3 means no accepted launch.
 if [ -z "$wait_launch" ] && [ "$owned" = 1 ] && [ "$read_only" = 0 ]; then
+  # dispatch.py prints the same refusal. This copy also holds when Python 3.10 is unavailable.
+  if [ "$runner" = claude ] && [ "$attach" = 0 ]; then
+    kept=""; changes=""
+    if [ "${#adddirs[@]}" -gt 0 ]; then kept="--add-dir"; changes="remove --add-dir"; fi
+    if [ -n "$log" ]; then kept="${kept:+$kept, }--log"; changes="${changes:+$changes and }remove --log"; fi
+    if [ -n "$cache_ttl" ]; then kept="${kept:+$kept, }--cache-ttl"; changes="${changes:+$changes and }remove --cache-ttl"; fi
+    case "$permmode" in
+      dontAsk|bypassPermissions)
+        kept="${kept:+$kept, }Claude --permission-mode $permmode"
+        changes="${changes:+$changes and }choose a permission mode Arc offers, such as auto" ;;
+    esac
+    if [ -n "$kept" ]; then
+      keep_change="add --attach"
+      if [ "$wait" = 1 ]; then keep_change="add --attach and remove --wait"; fi
+      echo "Reader-owned launch refused: Arc cannot keep $kept. No worker was started. Choose one of two relaunches. To start an Arc session the owner continues in Arc's prompt box, $changes. To keep the options in a terminal window the owner types in, $keep_change" >&2
+      exit 2
+    fi
+  fi
   if python3 -c 'import sys; assert sys.version_info >= (3,10)' >/dev/null 2>&1; then
     dispatch_cli_bash="$BASH"
     case "$OSTYPE" in
@@ -106,7 +146,9 @@ if [ -z "$wait_launch" ] && [ "$owned" = 1 ] && [ "$read_only" = 0 ]; then
     python3 "$skill_dir/dispatch.py" --internal-arc-only "${original_args[@]}" || arc_status=$?
     if [ "$arc_status" != 3 ]; then exit "$arc_status"; fi
   elif command -v "$arc_bin" >/dev/null 2>&1; then
-    echo "Arc route refused before acceptance: Python 3.10 is unavailable. Starting a standalone launch instead." >&2
+    reach=""
+    if [ "$runner" = claude ]; then reach=" The owner cannot send to that session from Arc."; fi
+    echo "Arc route refused before acceptance: Python 3.10 is unavailable. Starting a standalone launch instead.$reach" >&2
   fi
 fi
 
@@ -155,7 +197,7 @@ case "$arc_bin" in
     launcher_dir="${arc_bin%/*}"
     launcher_name="${arc_bin##*/}"
     case "$launcher_name" in [Aa][Rr][Cc].[Cc][Mm][Dd]|[Aa][Rr][Cc].[Bb][Aa][Tt]) ;; *) launcher_dir=/nonexistent ;; esac
-    for entry in "${launcher_dir%/*}/cli.cjs" "${launcher_dir%/*}/cli/arc.cjs" \
+    for entry in "$launcher_dir/run.cjs" "${launcher_dir%/*}/cli.cjs" "${launcher_dir%/*}/cli/arc.cjs" \
       "$launcher_dir/node_modules/@glin/arc/dist/arc.cjs" "${launcher_dir%/*}/@glin/arc/dist/arc.cjs"; do
       if [ -f "$entry" ]; then arc=(node "$entry"); break; fi
     done
@@ -185,6 +227,7 @@ if [ -z "$wait_launch" ]; then
 run_args=(run --provider "$runner" --cwd "$cwd" --prompt-file "$prompt" --name "$name")
 if [ -n "$model" ]; then run_args+=(--model "$model"); fi
 if [ -n "$effort" ]; then run_args+=(--effort "$effort"); fi
+if [ "$service_tier_given" = 1 ]; then run_args+=(--service-tier "$service_tier"); fi
 if [ "$read_only" = 1 ]; then run_args+=(--read-only); fi
 # Bash 3.2 treats an empty array as unset under set -u, so each loop guards its expansion.
 for tool in ${read_tools[@]+"${read_tools[@]}"}; do run_args+=(--read-tool "$tool"); done
@@ -204,7 +247,10 @@ if [ "$wait" = 1 ]; then run_args+=(--completion wait); else run_args+=(--comple
 if [ "$arc_dispatch" = 1 ]; then run_args+=(--arc-dispatch); fi
 run_args+=(--json)
 
-if [ "$runner" = claude ]; then
+if [ "$runner" = claude ] && [ -n "$cache_ttl" ]; then
+  export CLAUDE_CODE_PROMPT_CACHE_TTL="$cache_ttl"
+elif [ "$runner" = claude ] && [ "$owned" = 0 ]; then
+  # A reader-owned launch keeps the provider default, as in dispatch.py.
   export CLAUDE_CODE_PROMPT_CACHE_TTL="${CLAUDE_CODE_PROMPT_CACHE_TTL:-5m}"
 fi
 

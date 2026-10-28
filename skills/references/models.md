@@ -12,13 +12,13 @@ The single source for the model shorthands used by `consult`, `review`, `delegat
 | `fable` | Claude Fable 5.1 |
 | `haiku` | Claude Haiku 5.5 |
 | `sol` | GPT-6.1 Sol |
-| `terra` | GPT-5.6 Terra |
+| `terra` | GPT-6.1 Terra |
 | `astra` | GPT-6 Astra |
 | `luna` | GPT-6 Luna |
 | `gemini` | Gemini 3.1 Pro |
 | `flash` | Gemini 3.5 Flash |
 
-`haiku` selects `claude-haiku-5-5`. Pass this explicit ID to Claude native children. `dispatch.py` and `arc run` expand the shorthand. `sonnet` passes through to the Claude CLI's own alias, and an explicit `claude-sonnet-5` ID still selects Sonnet 5. `sol` selects `gpt-6.1-sol`. `luna` selects `gpt-6-luna`. `astra` selects `gpt-6-astra`. `terra` selects `gpt-5.6-terra`. GPT-6 Luna serves small reviews that do not need a deep review.
+`haiku` selects `claude-haiku-5-5`. Pass this explicit ID to Claude native children. `dispatch.py` and `arc run` expand the shorthand. `sonnet` passes through to the Claude CLI's own alias, and an explicit `claude-sonnet-5` ID still selects Sonnet 5. `sol` selects `gpt-6.1-sol`. `luna` selects `gpt-6-luna`. `astra` selects `gpt-6-astra`. `terra` selects `gpt-6.1-terra`. GPT-6 Luna serves small reviews that do not need a deep review.
 
 Explicit IDs retain their version. [model-providers.md](model-providers.md) owns provider-qualified IDs, availability checks, native inheritance, and dispatch selection.
 
@@ -44,4 +44,4 @@ Use this checklist only when changing the shared model selection.
 - Update the owning price table with exact model and provider boundaries, context bands, cache rates, and service tiers. Arc owns the rate table.
 - Extend `session-cost-audit/scripts/test_transcript_usage.py` and `test_arc_cost_parity.py`. Run both with `ARC_REPO` pointing to the owner's updated checkout.
 - Check downstream pricing adapters forward the source and window to Arc. Consume its report instead of loading or copying rates.
-- Run both launchers' behavior tests and validate changed skills. Prove new drift guards fail with the old mapping restored.
+- Run both launchers' behavior tests and validate changed skills. Set `ARC_REPO` to the updated Arc checkout when running `python -m unittest skills.dispatch.test_dispatch.ModelNameTests`. The parity check skips without it. Prove new drift guards fail with the old mapping restored.

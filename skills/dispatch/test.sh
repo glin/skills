@@ -29,7 +29,30 @@ calls=("$dir"/call-*)
 printf '%s\n' "$@" > "$dir/call-${#calls[@]}"
 launch=launch-1
 case "$1" in
-  windows) printf '{"version":1,"windows":[],"complete":true}\n' ;;
+  --help) printf 'Usage: arc start --prompt-file PATH [--agent-run]\n' ;;
+  windows)
+    # DISPATCH_TEST_ARC_WINDOW names the first folder of one ready window.
+    if [ -n "${DISPATCH_TEST_ARC_WINDOW:-}" ]; then
+      printf '{"version":1,"windows":[{"hostId":"aaaaaaaaaaaaaaaaaaaaaaaa","folders":["%s"],"scopeReady":true,"panelReady":true}],"complete":true}\n' "$DISPATCH_TEST_ARC_WINDOW"
+    else
+      printf '{"version":1,"windows":[],"complete":true}\n'
+    fi
+    ;;
+  start)
+    if [ "${2:-}" = --help ]; then
+      if [ -z "${DISPATCH_TEST_ARC_NO_COMPLETION:-}" ]; then printf '  --completion manual|wait  Select waited completion.\n'; fi
+      exit 0
+    fi
+    request=""; provider=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --request-id) request="$2"; shift 2 ;;
+        --provider) provider="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf '{"version":1,"requestId":"%s","status":"accepted","sessionId":"12345678-1234-1234-1234-123456789abc","provider":"%s","requester":null,"errors":[],"launchId":"%s"}\n' "$request" "$provider" "$launch"
+    ;;
   run)
     printf '%s\n' "${CLAUDE_CODE_PROMPT_CACHE_TTL:-unset}" > "$dir/ttl"
     provider=""; name=""; wait=0; marker=0
@@ -88,8 +111,9 @@ STUB
 chmod +x "$tmp/bin/arc"
 export ARC_BIN="$tmp/bin/arc"
 export DISPATCH_TEST_ARC_DIR="$tmp/calls"
-unset CLAUDE_CODE_PROMPT_CACHE_TTL ARC_WINDOW DISPATCH_TEST_ARC_REFUSE DISPATCH_TEST_ARC_DEADLINES DISPATCH_TEST_ARC_OUTCOME \
-  DISPATCH_TEST_ARC_STATE DISPATCH_TEST_ARC_FAIL DISPATCH_TEST_ARC_EXIT DISPATCH_TEST_ARC_UNSAVED DISPATCH_TEST_ARC_REASON DISPATCH_WAIT_LIMIT_SECONDS
+unset CLAUDE_CODE_PROMPT_CACHE_TTL ARC_WINDOW DISPATCH_TEST_ARC_WINDOW DISPATCH_TEST_ARC_REFUSE DISPATCH_TEST_ARC_DEADLINES DISPATCH_TEST_ARC_OUTCOME \
+  DISPATCH_TEST_ARC_STATE DISPATCH_TEST_ARC_FAIL DISPATCH_TEST_ARC_EXIT DISPATCH_TEST_ARC_UNSAVED DISPATCH_TEST_ARC_REASON DISPATCH_WAIT_LIMIT_SECONDS \
+  DISPATCH_TEST_ARC_NO_COMPLETION CODEX_THREAD_ID CLAUDE_CODE_SESSION_ID
 
 fail() { printf '%s: %s\n' "$launcher" "$1" >&2; exit 1; }
 # Windows Python prints C:\dir paths. Git Bash prints /c/dir paths, or /tmp paths for the
@@ -110,7 +134,7 @@ read_lines() {
     into+=("$REPLY")
   done < "$2"
 }
-# Run one launcher, then load the arc run arguments, the output, and the error text.
+# Run one launcher, then load the arc run or arc start arguments, the output, and the error text.
 launch() {
   local file
   rm -f -- "$tmp/calls/"*
@@ -124,7 +148,7 @@ launch() {
   for file in "$tmp/calls/"call-*; do
     read_lines call "$file"
     verbs+=("${call[0]} ${call[1]:-}")
-    if [ "${call[0]}" = run ]; then run=("${call[@]}"); fi
+    if [ "${call[0]}" = run ] || [ "${call[0]}" = start ]; then run=("${call[@]}"); fi
   done
   read_lines out "$tmp/out"
   read_lines err "$tmp/err"
@@ -162,6 +186,41 @@ for launcher in py sh; do
     expect_no_arc_call "an unmarked $runner launch"
   done
   launch_marker=1
+  # A requested speed survives each standalone permission and attendance route exactly once.
+  for mode in worker read-only attach; do
+    mode_flags=()
+    case "$mode" in read-only) mode_flags=(--read-only) ;; attach) mode_flags=(--attach) ;; esac
+    for tier in omitted default fast priority ultrafast; do
+      tier_flags=()
+      if [ "$tier" != omitted ]; then tier_flags=(--service-tier "$tier"); fi
+      launch --runner codex --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md" \
+        "${mode_flags[@]}" "${tier_flags[@]}"
+      expect_exit 0 "$mode tier $tier"
+      expect_pair --model gpt-6.1-sol; expect_pair --effort high; expect_pair --provider codex
+      tier_count=0
+      for arg in "${run[@]}"; do if [ "$arg" = --service-tier ]; then tier_count=$((tier_count + 1)); fi; done
+      if [ "$tier" = omitted ]; then
+        [ "$tier_count" = 0 ] || fail "omission added a tier"
+      else
+        [ "$tier_count" = 1 ] || fail "$mode passed the tier $tier_count times"
+        expect_pair --service-tier "$tier"
+      fi
+      case "$mode" in
+        worker) expect_flag --agent-run; reject_flag --permissions ;;
+        read-only) expect_flag --agent-run; expect_flag --read-only; reject_flag --permissions ;;
+        attach) expect_flag --agent-run=false; expect_flag --attach; reject_flag --log ;;
+      esac
+    done
+  done
+  # An installed Arc that refuses the flag must never trigger a launch without it.
+  DISPATCH_TEST_ARC_REFUSE="Unknown option: --service-tier" launch --runner codex --service-tier ultrafast \
+    --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 1 "an unsupported tier"
+  expect_pair --service-tier ultrafast
+  [ "${verbs[*]}" = "run --provider" ] || fail "an unsupported tier retried"
+  has_line err "Unknown option: --service-tier" || fail "the tier refusal is missing"
+  reject_out "ARC_DISPATCH_SESSION="
+
   # A read-only Claude launch with an explicit log and the marker.
   launch --runner claude --read-only --model sonnet --effort high --name review-1 \
     --read-tool mcp__example__get_item --add-dir "$tmp/extra" --cwd "$tmp/work" \
@@ -178,6 +237,39 @@ for launcher in py sh; do
   expect_out "result: $tmp/review.log"; expect_out '{"launchId":"launch-1"'
   expect_out "status: arc dispatch status launch-1"
   expect_marker_last
+
+  # --cache-ttl replaces the worker's cache lifetime, also over the caller's own value.
+  CLAUDE_CODE_PROMPT_CACHE_TTL=5m launch --runner claude --read-only --cache-ttl 1h --model sonnet --effort high \
+    --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "a 1 hour Claude launch"
+  read_lines ttl "$tmp/calls/ttl"
+  [ "${ttl[0]}" = 1h ] || fail "--cache-ttl 1h reached arc run as ${ttl[0]}"
+  reject_flag --cache-ttl
+  launch --runner claude --attach --cache-ttl 1h --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "an attached 1 hour Claude launch"
+  read_lines ttl "$tmp/calls/ttl"
+  [ "${ttl[0]}" = 1h ] || fail "an attached --cache-ttl 1h reached arc run as ${ttl[0]}"
+  launch --runner claude --owned --cache-ttl 1h --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 2 "a reader-owned Claude launch with --cache-ttl"
+  has_line err "Arc cannot keep --cache-ttl" || fail "the reader-owned --cache-ttl refusal is missing"
+  expect_no_arc_call "a reader-owned Claude launch with --cache-ttl"
+  launch --runner codex --read-only --cache-ttl 1h --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 2 "a Codex launch with --cache-ttl"
+  has_line err "--cache-ttl is a Claude flag" || fail "the Codex --cache-ttl refusal is missing"
+  expect_no_arc_call "a Codex launch with --cache-ttl"
+  launch --runner claude --read-only --cache-ttl 2h --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 2 "a Claude launch with --cache-ttl 2h"
+  has_line err "--cache-ttl" || fail "the --cache-ttl 2h refusal is missing"
+  expect_no_arc_call "a Claude launch with --cache-ttl 2h"
+  # A reader-owned launch through arc run keeps the provider default, in a terminal window
+  # or after the window route refuses. The read-only launch above is a workflow worker.
+  for owned_flag in --attach --owned; do
+    launch --runner claude "$owned_flag" --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+    expect_exit 0 "a reader-owned Claude launch with $owned_flag"
+    expect_flag --agent-run=false
+    read_lines ttl "$tmp/calls/ttl"
+    [ "${ttl[0]}" = unset ] || fail "a reader-owned Claude launch with $owned_flag reached arc run with the cache lifetime ${ttl[0]}"
+  done
 
   # A Codex launch maps --full-access and builds the default log from the name.
   launch --runner codex --full-access --model gpt-6.1-sol --effort xhigh --name fix-1 \
@@ -213,9 +305,18 @@ for launcher in py sh; do
     expect_out "outcome: $outcome"; expect_out "worker report"
   done
   unset DISPATCH_TEST_ARC_OUTCOME DISPATCH_TEST_ARC_EXIT
+  # dispatch.py ends an observation at its deadline and prints the command that resumes it.
   export DISPATCH_WAIT_LIMIT_SECONDS=0
   launch --wait-launch launch-1
-  expect_exit 2 "observation past its bound"
+  if [ "$launcher" = py ]; then
+    expect_exit 75 "observation at its deadline"
+    expect_out "outcome: deadline"; expect_out "--wait-launch launch-1"; reject_out "--wait-launch launch-1 --read-only"
+    launch --wait-launch launch-1 --read-only
+    expect_exit 75 "review observation at its deadline"
+    expect_out "--wait-launch launch-1 --read-only"
+  else
+    expect_exit 2 "observation past its bound"
+  fi
   expect_no_arc_call "observation past its bound"
   unset DISPATCH_WAIT_LIMIT_SECONDS DISPATCH_TEST_ARC_DEADLINES
   export DISPATCH_TEST_ARC_FAIL=wait
@@ -266,9 +367,14 @@ for launcher in py sh; do
   # A wait past its bound stops with the marker last and starts no further wait.
   export DISPATCH_TEST_ARC_DEADLINES=5 DISPATCH_WAIT_LIMIT_SECONDS=0
   launch --runner codex --wait --arc-dispatch --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
-  expect_exit 2 "a wait past its bound"
   [ "${verbs[*]}" = "run --provider" ] || fail "a wait past its bound called arc as: ${verbs[*]}"
-  has_line err "Arc published no outcome for launch launch-1" || fail "the bounded wait names no cause"
+  if [ "$launcher" = py ]; then
+    expect_exit 75 "a wait at its deadline"
+    expect_out "outcome: deadline"; expect_out "--wait-launch launch-1"
+  else
+    expect_exit 2 "a wait past its bound"
+    has_line err "Arc published no outcome for launch launch-1" || fail "the bounded wait names no cause"
+  fi
   expect_marker_last
   unset DISPATCH_TEST_ARC_DEADLINES DISPATCH_WAIT_LIMIT_SECONDS
 
@@ -277,8 +383,100 @@ for launcher in py sh; do
     --cwd "$tmp/work" --prompt "$tmp/prompt.md"
   expect_exit 0 "owned writable Claude"
   has_line err "no Arc window is available" || fail "the Arc route did not report its refusal"
+  has_line err "The owner cannot send to that session from Arc." || fail "the fallback does not say the owner cannot send to it"
   expect_pair --permissions acceptEdits; expect_flag --agent-run=false; reject_flag --agent-run
   expect_out "attach: arc dispatch attach launch-1"
+
+  # A reader-owned Claude launch refuses an option arc start cannot keep, starts no worker, and
+  # names both relaunches. The refusal holds when dispatch.sh finds no Python 3.10.
+  for python in present absent; do
+    if [ "$python" = absent ]; then
+      if [ "$launcher" = py ]; then continue; fi
+      python3() { return 1; }; export -f python3
+    fi
+    for option in --add-dir --log; do
+      value="$tmp/extra"; if [ "$option" = --log ]; then value="$tmp/owned.log"; fi
+      launch --runner claude --owned "$option" "$value" --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+      expect_exit 2 "owned with $option and Python $python"
+      expect_no_arc_call "owned with $option and Python $python"
+      has_line err "Arc cannot keep $option." || fail "the $option refusal names no option"
+      has_line err "remove $option" || fail "the $option refusal names no Arc relaunch"
+      has_line err "in a terminal window the owner types in, add --attach" || fail "the $option refusal names no attached relaunch"
+    done
+    # A reader-owned Codex launch keeps the standalone fallback and makes no claim about reaching it.
+    launch --runner codex --owned --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+    expect_exit 0 "owned Codex with Python $python"
+    has_line err "refused before acceptance" || fail "owned Codex reported no fallback"
+    if has_line err "cannot send"; then fail "the Codex fallback claims the owner cannot send to it"; fi
+    [ "${verbs[*]}" = "run --provider" ] || fail "owned Codex called arc as: ${verbs[*]}"
+    expect_flag --agent-run=false
+    # The no-Python fallback must keep the selection and its local refusals.
+    launch --runner codex --owned --full-access --service-tier fast --model gpt-6.1-sol --effort high \
+      --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+    expect_exit 0 "owned Fast with Python $python"
+    expect_pair --service-tier fast; expect_pair --permissions danger-full-access; expect_flag --agent-run=false
+    for runner in claude codex; do
+      tier=fast; if [ "$runner" = codex ]; then tier=""; fi
+      launch --runner "$runner" --owned --service-tier "$tier" --model gpt-6.1-sol --effort high \
+        --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+      expect_exit 2 "invalid tier with Python $python"
+      expect_no_arc_call "invalid tier with Python $python"
+    done
+    # --attach and --wait exclude each other on both routes, before any worker starts.
+    for runner in claude codex; do
+      export DISPATCH_TEST_ARC_WINDOW="$tmp/work"
+      launch --runner "$runner" --attach --wait --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+      expect_exit 2 "$runner --attach --wait with Python $python"
+      expect_no_arc_call "$runner --attach --wait with Python $python"
+      has_line err "--attach and --wait exclude each other" || fail "the --attach --wait refusal is missing"
+      unset DISPATCH_TEST_ARC_WINDOW
+    done
+    unset -f python3
+  done
+  launch --runner codex --owned --permission-mode on-request --model gpt-6.1-sol --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "owned Codex with --permission-mode"
+  has_line err "Arc cannot keep Codex workspace-write with no approvals, Codex --permission-mode." \
+    || fail "the Codex fallback names no option"
+  expect_pair --permissions on-request; expect_flag --agent-run=false
+
+
+  # Without --owned, the same options keep the standalone launch and print no refusal.
+  launch --runner claude --add-dir "$tmp/extra" --log "$tmp/plain.log" --model sonnet --effort high \
+    --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "unowned writable Claude with standalone options"
+  [ "${verbs[*]}" = "run --provider" ] || fail "an unowned launch called arc as: ${verbs[*]}"
+  expect_pair --add-dir "$tmp/extra"; expect_pair --log "$tmp/plain.log"; expect_flag --agent-run
+  if has_line err "refused"; then fail "an unowned launch printed a refusal"; fi
+
+  # --attach keeps its terminal route when Arc cannot keep an option.
+  launch --runner claude --attach --add-dir "$tmp/extra" --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "attended Claude with --add-dir"
+  expect_flag --attach; expect_pair --add-dir "$tmp/extra"
+  has_line err "Arc cannot keep --add-dir" || fail "the attended fallback names no option"
+
+  # A waited reader-owned launch starts in the Arc window with waited completion and follows Arc's wait.
+  export DISPATCH_TEST_ARC_WINDOW="$tmp/work" DISPATCH_TEST_ARC_DEADLINES=1
+  launch --runner claude --owned --wait --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "a waited Arc session"
+  [ "${verbs[*]}" = "windows --json --help  start --help start --window dispatch wait dispatch wait dispatch status dispatch result" ] \
+    || fail "a waited Arc session called arc as: ${verbs[*]}"
+  expect_pair --completion wait; reject_flag --add-dir; reject_flag --log
+  expect_out "mode: Arc session"; expect_out "--wait-launch launch-1"; expect_out "worker report"
+  expect_marker_last
+
+  # An arc start that lists no --completion starts a manual Arc session and prints no observer.
+  # A waited request then runs standalone.
+  export DISPATCH_TEST_ARC_NO_COMPLETION=1
+  launch --runner claude --owned --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "an Arc session without --completion"
+  [ "${run[0]}" = start ] || fail "an Arc without --completion did not start in the window"
+  reject_flag --completion; reject_out "--wait-launch"; expect_out "mode: Arc session"
+  launch --runner claude --owned --wait --model sonnet --effort high --cwd "$tmp/work" --prompt "$tmp/prompt.md"
+  expect_exit 0 "a waited launch on an Arc without --completion"
+  has_line err "the installed arc start cannot wait for the session" || fail "the old Arc fallback names no cause"
+  [ "${run[0]}" = run ] || fail "a waited launch on an Arc without --completion did not run standalone"
+  expect_pair --completion wait
+  unset DISPATCH_TEST_ARC_WINDOW DISPATCH_TEST_ARC_DEADLINES DISPATCH_TEST_ARC_NO_COMPLETION
 
   # An Arc refusal reaches the caller with Arc's exit status.
   export DISPATCH_TEST_ARC_REFUSE="Standalone run requires --model."
